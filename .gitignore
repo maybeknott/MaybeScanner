@@ -1,0 +1,29 @@
+runtime/
+*.log
+*.pid
+*.tmp
+*.bak
+
+# Generated certificates (never commit private keys)
+mycert.crt
+mycert.key
+*.key
+.signing/
+signing.properties
+
+# IDE and OS
+.qodo/
+.tmp*/
+Thumbs.db
+Desktop.ini
+.idea/
+*.iml
+
+# Android build output
+build/
+app/build/
+.gradle/
+local.properties
+java_pid*.hprof
+!app/src/main/assets/**/*.apk
+dist/apk/*.apk
