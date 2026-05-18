@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,46 +23,52 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	tls "github.com/refraction-networking/utls"
 )
 
 type scanRequest struct {
-	Targets       []string `json:"targets"`
-	SNIs          []string `json:"snis"`
-	Ports         []int    `json:"ports"`
-	HTTPPath      string   `json:"http_path"`
-	Threads       int      `json:"threads"`
-	TimeoutMS     int      `json:"timeout_ms"`
-	MaxTargets    int      `json:"max_targets"`
-	MaxCIDRHosts  int      `json:"max_cidr_hosts"`
-	BatchSize     int      `json:"batch_size"`
-	MultiSNI      bool     `json:"multi_sni"`
-	HTTPProbe     bool     `json:"http_probe"`
-	Randomize     bool     `json:"randomize"`
-	RatePerSecond int      `json:"rate_per_second"`
-	JitterMS      int      `json:"jitter_ms"`
-	RespectSafety bool     `json:"respect_safety"`
+	Targets        []string `json:"targets"`
+	SNIs           []string `json:"snis"`
+	Ports          []int    `json:"ports"`
+	HTTPPath       string   `json:"http_path"`
+	Threads        int      `json:"threads"`
+	TimeoutMS      int      `json:"timeout_ms"`
+	MaxTargets     int      `json:"max_targets"`
+	MaxCIDRHosts   int      `json:"max_cidr_hosts"`
+	BatchSize      int      `json:"batch_size"`
+	MultiSNI       bool     `json:"multi_sni"`
+	HTTPProbe      bool     `json:"http_probe"`
+	Randomize      bool     `json:"randomize"`
+	RatePerSecond  int      `json:"rate_per_second"`
+	JitterMS       int      `json:"jitter_ms"`
+	RespectSafety  bool     `json:"respect_safety"`
+	TLSFingerprint string   `json:"tls_fingerprint"`
 }
 
 type result struct {
-	Target       string `json:"target"`
-	IP           string `json:"ip"`
-	Port         int    `json:"port"`
-	SNI          string `json:"sni"`
-	TCP          bool   `json:"tcp"`
-	TLS          bool   `json:"tls"`
-	HTTP         bool   `json:"http"`
-	HTTPStatus   int    `json:"http_status"`
-	TLSVersion   string `json:"tls_version,omitempty"`
-	TLSCipher    string `json:"tls_cipher,omitempty"`
-	ALPN         string `json:"alpn,omitempty"`
-	CertSubject  string `json:"cert_subject,omitempty"`
-	ServerHeader string `json:"server_header,omitempty"`
-	CacheHeader  string `json:"cache_header,omitempty"`
-	CDN          string `json:"cdn"`
-	LatencyMS    int64  `json:"latency_ms"`
-	Score        int    `json:"score"`
-	Error        string `json:"error,omitempty"`
-	BatchNumber  int    `json:"batch_number"`
+	Target         string `json:"target"`
+	IP             string `json:"ip"`
+	Port           int    `json:"port"`
+	SNI            string `json:"sni"`
+	TCP            bool   `json:"tcp"`
+	TLS            bool   `json:"tls"`
+	HTTP           bool   `json:"http"`
+	HTTPStatus     int    `json:"http_status"`
+	TLSVersion     string `json:"tls_version,omitempty"`
+	TLSCipher      string `json:"tls_cipher,omitempty"`
+	ALPN           string `json:"alpn,omitempty"`
+	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
+	CertSubject    string `json:"cert_subject,omitempty"`
+	ServerHeader   string `json:"server_header,omitempty"`
+	CacheHeader    string `json:"cache_header,omitempty"`
+	AltSvc         string `json:"alt_svc,omitempty"`
+	HTTP3Hint      bool   `json:"http3_hint,omitempty"`
+	CDN            string `json:"cdn"`
+	LatencyMS      int64  `json:"latency_ms"`
+	Score          int    `json:"score"`
+	Error          string `json:"error,omitempty"`
+	BatchNumber    int    `json:"batch_number"`
 }
 
 type stats struct {
@@ -92,7 +97,6 @@ var (
 	metricDNSRuns        atomic.Uint64
 	metricSafetySkipped  atomic.Uint64
 	metricBackoffEvents  atomic.Uint64
-	jsonEncoderPool      = sync.Pool{New: func() any { return json.NewEncoder(nil) }}
 	safetyCIDRPrefixes   = loadSafetyPrefixes()
 )
 
@@ -149,7 +153,7 @@ func index(w http.ResponseWriter, _ *http.Request) {
 <div class=tabs><button class="tab active" onclick="showTab('scan',this)">Scan</button><button class=tab onclick="showTab('analytics',this)">Analytics</button><button class=tab onclick="showTab('help',this)">Help</button></div>
 <div class=grid><section class=card><label>Targets</label><textarea id=targets rows=11>{{.Targets}}</textarea><label>SNIs</label><textarea id=snis rows=6>{{.SNIs}}</textarea>
 <div class=row><input id=maxTargets type=number value=72000><input id=batchSize type=number value=12000></div><div class=row><input id=threads type=number value=64><input id=timeout type=number value=2500></div>
-<div class=row><input id=ports value="443"><input id=path value="/"></div><div class=row><input id=rate type=number value=250 placeholder="Rate/sec"><input id=jitter type=number value=25 placeholder="Jitter ms"></div>
+<div class=row><input id=ports value="443"><input id=path value="/"></div><select id=tlsFingerprint><option value=rotate>Rotate TLS fingerprint</option><option value=chrome>Chrome ClientHello</option><option value=firefox>Firefox ClientHello</option><option value=ios>iOS ClientHello</option><option value=randomized>Randomized ALPN ClientHello</option><option value=randomized-no-alpn>Randomized no-ALPN ClientHello</option></select><div class=row><input id=rate type=number value=250 placeholder="Rate/sec"><input id=jitter type=number value=25 placeholder="Jitter ms"></div>
 <label><input id=multi type=checkbox checked style="width:auto"> Multi-SNI</label><label><input id=http type=checkbox checked style="width:auto"> HTTP HEAD probe</label><label><input id=randomize type=checkbox checked style="width:auto"> Randomize target order</label><label><input id=safety type=checkbox checked style="width:auto"> Block reserved/unsafe ranges</label>
 <button onclick=start()>Start Scan</button><button class=danger onclick=stop()>Stop</button></section>
 <section class=card id=tab-scan><div class=dash><div class=ring id=ring><span id=ringText>0%</span></div><div><h3 id=status>Ready</h3><div class=bar><div class=fill id=fill></div></div><p id=metrics class=muted></p></div></div><table><thead><tr><th>Target</th><th>IP</th><th>SNI</th><th>Checks</th><th>ms</th><th>ALPN</th><th>CDN</th></tr></thead><tbody id=rows></tbody></table></section>
@@ -158,7 +162,7 @@ func index(w http.ResponseWriter, _ *http.Request) {
 <script>
 let rows=[];function v(id){return document.getElementById(id).value}function set(s){document.getElementById('status').textContent=s}
 function showTab(id,el){for(let x of ['scan','analytics','help'])document.getElementById('tab-'+x).style.display=x===id?'block':'none';for(let b of document.querySelectorAll('.tab'))b.classList.remove('active');el.classList.add('active')}
-async function start(){rows=[];document.getElementById('rows').innerHTML='';document.getElementById('hex').innerHTML='';set('Starting');let r=await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({targets:v('targets').split(/[\s,;]+/).filter(Boolean),snis:v('snis').split(/[\s,;]+/).filter(Boolean),ports:v('ports').split(/[\s,;]+/).filter(Boolean).map(Number),http_path:v('path'),max_targets:+v('maxTargets'),batch_size:+v('batchSize'),threads:+v('threads'),timeout_ms:+v('timeout'),rate_per_second:+v('rate'),jitter_ms:+v('jitter'),randomize:document.getElementById('randomize').checked,respect_safety:document.getElementById('safety').checked,multi_sni:document.getElementById('multi').checked,http_probe:document.getElementById('http').checked})});let rd=r.body.getReader(),d=new TextDecoder(),buf='';while(true){let x=await rd.read();if(x.done)break;buf+=d.decode(x.value,{stream:true});let parts=buf.split(/\n/);buf=parts.pop();for(let p of parts){if(!p.trim())continue;let e=JSON.parse(p);if(e.type==='init'){set('Scanning '+e.total+' jobs in '+e.batches+' batches')}if(e.type==='progress'){render(e.result,e.stats)}if(e.type==='done'){set(e.stopped?'Stopped':'Done')}}}}
+async function start(){rows=[];document.getElementById('rows').innerHTML='';document.getElementById('hex').innerHTML='';set('Starting');let r=await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({targets:v('targets').split(/[\s,;]+/).filter(Boolean),snis:v('snis').split(/[\s,;]+/).filter(Boolean),ports:v('ports').split(/[\s,;]+/).filter(Boolean).map(Number),http_path:v('path'),tls_fingerprint:v('tlsFingerprint'),max_targets:+v('maxTargets'),batch_size:+v('batchSize'),threads:+v('threads'),timeout_ms:+v('timeout'),rate_per_second:+v('rate'),jitter_ms:+v('jitter'),randomize:document.getElementById('randomize').checked,respect_safety:document.getElementById('safety').checked,multi_sni:document.getElementById('multi').checked,http_probe:document.getElementById('http').checked})});let rd=r.body.getReader(),d=new TextDecoder(),buf='';while(true){let x=await rd.read();if(x.done)break;buf+=d.decode(x.value,{stream:true});let parts=buf.split(/\n/);buf=parts.pop();for(let p of parts){if(!p.trim())continue;let e=JSON.parse(p);if(e.type==='init'){set('Scanning '+e.total+' jobs in '+e.batches+' batches')}if(e.type==='progress'){render(e.result,e.stats)}if(e.type==='done'){set(e.stopped?'Stopped':'Done')}}}}
 async function stop(){await fetch('/api/stop',{method:'POST'});set('Stopping')}
 function esc(x){return String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function render(r,s){rows.push(r);rows.sort((a,b)=>b.score-a.score||a.latency_ms-b.latency_ms);let pct=s.checked*100/Math.max(1,s.total);document.getElementById('fill').style.width=pct+'%';document.getElementById('ring').style.background='conic-gradient(var(--accent) '+(pct*3.6)+'deg,#263948 0deg)';document.getElementById('ringText').textContent=Math.round(pct)+'%';document.getElementById('metrics').textContent='Checked '+s.checked+'/'+s.total+' · working '+s.working+' · TLS '+s.tls_working+' · HTTP '+s.http_working+' · batch '+s.batch+'/'+s.batches;document.getElementById('rows').innerHTML=rows.slice(0,250).map(x=>'<tr title="'+esc((x.tls_version||'')+' '+(x.cert_subject||''))+'"><td>'+esc(x.target)+'</td><td>'+esc(x.ip+':'+x.port)+'</td><td>'+esc(x.sni||'--')+'</td><td><span class="'+(x.tcp?'ok':'bad')+'">TCP</span> <span class="'+(x.tls?'ok':'bad')+'">TLS</span> <span class="'+(x.http?'ok':'bad')+'">HTTP</span></td><td>'+(x.latency_ms||'')+'</td><td>'+esc(x.alpn||'--')+'</td><td><span class=pill>'+esc(x.cdn)+'</span></td></tr>').join('');document.getElementById('analyticsText').textContent='Top score '+(rows[0]?.score||0)+' · CDN groups '+new Set(rows.map(x=>x.cdn)).size;let h=document.getElementById('hex');if(h.childElementCount<1024){let c=document.createElement('div');c.className='cell '+(r.http?'good':r.tls||r.tcp?'mid':'bad');h.appendChild(c)}}
@@ -180,12 +184,14 @@ func dashboardJS(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(`(function(){
 function byId(id){return document.getElementById(id)}
 function esc(x){return String(x==null?'':x).replace(/[&<>"']/g,function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]})}
-function csv(rows){return ['target,ip,port,sni,tcp,tls,http,latency_ms,alpn,cdn,score'].concat(rows.map(function(r){return [r.target,r.ip,r.port,r.sni,r.tcp,r.tls,r.http,r.latency_ms,r.alpn,r.cdn,r.score].map(function(x){return '"'+String(x==null?'':x).replace(/"/g,'""')+'"'}).join(',')})).join('\n')}
+function csv(rows){return ['target,ip,port,sni,tcp,tls,http,http3_hint,latency_ms,alpn,tls_fingerprint,alt_svc,cdn,score'].concat(rows.map(function(r){return [r.target,r.ip,r.port,r.sni,r.tcp,r.tls,r.http,r.http3_hint,r.latency_ms,r.alpn,r.tls_fingerprint,r.alt_svc,r.cdn,r.score].map(function(x){return '"'+String(x==null?'':x).replace(/"/g,'""')+'"'}).join(',')})).join('\n')}
 function spark(r){return [r.tcp_latency_ms,r.tls_latency_ms,r.http_latency_ms].map(function(v){return !v?'-':v<120?'_':v<300?':':v<700?'|':'#'}).join('')}
-function updateMetrics(){var rows=window.__uiRows||[];var cdn=new Set(rows.map(function(x){return x.cdn}));var best=rows.reduce(function(m,x){return Math.max(m,+x.score||0)},0);if(byId('mWorking'))mWorking.textContent=rows.filter(function(x){return x.tcp||x.tls||x.http}).length;if(byId('mHttp'))mHttp.textContent=rows.filter(function(x){return x.http}).length;if(byId('mScore'))mScore.textContent=Math.round(best);if(byId('mCdn'))mCdn.textContent=cdn.size}
-window.rerender=function(){var body=byId('rows');if(!body)return;var q=((byId('uiFilter')||{}).value||'').toLowerCase();var rows=(window.__uiRows||[]).filter(function(x){return (x.ip+' '+x.sni+' '+x.cdn+' '+x.alpn).toLowerCase().indexOf(q)>=0});body.innerHTML=rows.length?rows.slice(0,300).map(function(x){return '<tr title="'+esc((x.tls_version||'')+' '+(x.cert_subject||''))+'"><td>'+esc(x.target)+'</td><td>'+esc(x.ip+':'+x.port)+'</td><td>'+esc(x.sni||'--')+'</td><td><span class="stage '+(x.tcp?'on':'')+'">TCP</span><span class="stage '+(x.tls?'on':'')+'">TLS</span><span class="stage '+(x.http?'on':'')+'">HTTP</span></td><td><span class=spark>'+spark(x)+'</span> '+(x.latency_ms||'')+'</td><td>'+esc(x.alpn||'--')+'</td><td><span class=pill>'+esc(x.cdn)+'</span></td></tr>'}).join(''):'<tr><td colspan=7><div class=empty>No matching rows</div></td></tr>';updateMetrics()}
-function ready(){var scan=byId('tab-scan');if(!scan||byId('uiToolbar'))return;var toolbar=document.createElement('div');toolbar.id='uiToolbar';toolbar.className='toolbar';toolbar.innerHTML='<input id="uiFilter" placeholder="Filter IP, SNI, CDN, ALPN"><button id="uiCopy">Copy CSV</button><button id="uiJson">Copy JSON</button><button id="uiClear">Clear view</button>';scan.insertBefore(toolbar,scan.children[1]);var metrics=document.createElement('div');metrics.className='metricGrid';metrics.innerHTML='<div class=metric><span>Working</span><strong id=mWorking>0</strong></div><div class=metric><span>HTTP</span><strong id=mHttp>0</strong></div><div class=metric><span>Best score</span><strong id=mScore>0</strong></div><div class=metric><span>CDNs</span><strong id=mCdn>0</strong></div>';scan.insertBefore(metrics,toolbar.nextSibling);var table=document.querySelector('table');if(table){var wrap=document.createElement('div');wrap.className='tableWrap';table.parentNode.insertBefore(wrap,table);wrap.appendChild(table)}byId('uiCopy').onclick=function(){navigator.clipboard&&navigator.clipboard.writeText(csv(window.__uiRows||[]))};byId('uiJson').onclick=function(){navigator.clipboard&&navigator.clipboard.writeText(JSON.stringify(window.__uiRows||[],null,2))};byId('uiClear').onclick=function(){window.__uiRows=[];byId('rows').innerHTML='<tr><td colspan=7><div class=empty>Waiting for scan results</div></td></tr>';updateMetrics()};byId('uiFilter').oninput=window.rerender;window.rerender()}
-var old=window.render;window.render=function(r,s){if(old)old(r,s);window.__uiRows=window.__uiRows||[];window.__uiRows.push(r);window.rerender()};document.addEventListener('DOMContentLoaded',ready);ready()
+function updateMetrics(){var rows=window.__uiRows||[];var cdn=new Set(rows.map(function(x){return x.cdn}));var best=rows.reduce(function(m,x){return Math.max(m,+x.score||0)},0);if(byId('mWorking'))byId('mWorking').textContent=rows.filter(function(x){return x.tcp||x.tls||x.http}).length;if(byId('mHttp'))byId('mHttp').textContent=rows.filter(function(x){return x.http}).length;if(byId('mH3'))byId('mH3').textContent=rows.filter(function(x){return x.http3_hint}).length;if(byId('mScore'))byId('mScore').textContent=Math.round(best);if(byId('mCdn'))byId('mCdn').textContent=cdn.size}
+function updateProgress(r,s){if(!s)return;var pct=s.checked*100/Math.max(1,s.total);if(byId('fill'))byId('fill').style.width=pct+'%';if(byId('ring'))byId('ring').style.background='conic-gradient(var(--accent) '+(pct*3.6)+'deg,#263948 0deg)';if(byId('ringText'))byId('ringText').textContent=Math.round(pct)+'%';if(byId('metrics'))byId('metrics').textContent='Checked '+s.checked+'/'+s.total+' - working '+s.working+' - TLS '+s.tls_working+' - HTTP '+s.http_working+' - batch '+s.batch+'/'+s.batches;if(byId('analyticsText'))byId('analyticsText').textContent='Top score '+((window.__uiRows||[])[0]?.score||0)+' - CDN groups '+new Set((window.__uiRows||[]).map(function(x){return x.cdn})).size;var h=byId('hex');if(h&&h.childElementCount<1024){var c=document.createElement('div');c.className='cell '+(r.http?'good':r.tls||r.tcp?'mid':'bad');h.appendChild(c)}}
+window.rerender=function(){var body=byId('rows');if(!body)return;var q=((byId('uiFilter')||{}).value||'').toLowerCase();var rows=(window.__uiRows||[]).filter(function(x){return (x.ip+' '+x.sni+' '+x.cdn+' '+x.alpn+' '+x.tls_fingerprint+' '+x.alt_svc+' '+(x.http3_hint?'http3 h3':'')).toLowerCase().indexOf(q)>=0});body.innerHTML=rows.length?rows.slice(0,300).map(function(x){return '<tr title="'+esc((x.tls_version||'')+' '+(x.cert_subject||'')+' '+(x.alt_svc||''))+'"><td>'+esc(x.target)+'</td><td>'+esc(x.ip+':'+x.port)+'</td><td>'+esc(x.sni||'--')+'</td><td><span class="stage '+(x.tcp?'on':'')+'">TCP</span><span class="stage '+(x.tls?'on':'')+'">TLS</span><span class="stage '+(x.http?'on':'')+'">HTTP</span><span class="stage '+(x.http3_hint?'on':'')+'">H3</span></td><td><span class=spark>'+spark(x)+'</span> '+(x.latency_ms||'')+'</td><td>'+esc((x.alpn||'--')+'/'+(x.tls_fingerprint||'--')+(x.http3_hint?' / h3':''))+'</td><td><span class=pill>'+esc(x.cdn)+'</span></td></tr>'}).join(''):'<tr><td colspan=7><div class=empty>No matching rows</div></td></tr>';updateMetrics()}
+function ready(){var scan=byId('tab-scan');if(!scan||byId('uiToolbar'))return;var toolbar=document.createElement('div');toolbar.id='uiToolbar';toolbar.className='toolbar';toolbar.innerHTML='<input id="uiFilter" placeholder="Filter IP, SNI, CDN, ALPN, H3"><button id="uiCopy">Copy CSV</button><button id="uiJson">Copy JSON</button><button id="uiClear">Clear view</button>';scan.insertBefore(toolbar,scan.children[1]);var metrics=document.createElement('div');metrics.className='metricGrid';metrics.innerHTML='<div class=metric><span>Working</span><strong id=mWorking>0</strong></div><div class=metric><span>HTTP</span><strong id=mHttp>0</strong></div><div class=metric><span>HTTP/3 hint</span><strong id=mH3>0</strong></div><div class=metric><span>Best score</span><strong id=mScore>0</strong></div><div class=metric><span>CDNs</span><strong id=mCdn>0</strong></div>';scan.insertBefore(metrics,toolbar.nextSibling);var table=document.querySelector('table');if(table){var wrap=document.createElement('div');wrap.className='tableWrap';table.parentNode.insertBefore(wrap,table);wrap.appendChild(table)}byId('uiCopy').onclick=function(){navigator.clipboard&&navigator.clipboard.writeText(csv(window.__uiRows||[]))};byId('uiJson').onclick=function(){navigator.clipboard&&navigator.clipboard.writeText(JSON.stringify(window.__uiRows||[],null,2))};byId('uiClear').onclick=function(){window.__uiRows=[];byId('rows').innerHTML='<tr><td colspan=7><div class=empty>Waiting for scan results</div></td></tr>';updateMetrics()};byId('uiFilter').oninput=window.rerender;window.rerender()}
+var oldStart=window.start;if(oldStart){window.start=function(){window.__uiRows=[];return oldStart.apply(this,arguments)}}
+window.render=function(r,s){window.__uiRows=window.__uiRows||[];if(s&&s.checked<=1)window.__uiRows=[];window.__uiRows.push(r);window.__uiRows.sort(function(a,b){return ((+b.score||0)-(+a.score||0))||((+a.latency_ms||999999)-(+b.latency_ms||999999))});updateProgress(r,s);window.rerender()};document.addEventListener('DOMContentLoaded',ready);ready()
 })();`))
 }
 
@@ -391,8 +397,12 @@ func exportNmap(w http.ResponseWriter, r *http.Request) {
 		if row.TCP || row.TLS || row.HTTP {
 			state = "open"
 		}
-		_, _ = fmt.Fprintf(w, `<host><status state="up"/><address addr="%s" addrtype="ipv4"/><ports><port protocol="tcp" portid="%d"><state state="%s"/><service name="%s" product="%s"/></port></ports></host>`+"\n",
-			xmlEscape(row.IP), row.Port, state, xmlEscape(row.SNI), xmlEscape(row.CDN))
+		addrType := "ipv4"
+		if strings.Contains(row.IP, ":") {
+			addrType = "ipv6"
+		}
+		_, _ = fmt.Fprintf(w, `<host><status state="up"/><address addr="%s" addrtype="%s"/><ports><port protocol="tcp" portid="%d"><state state="%s"/><service name="%s" product="%s"/></port></ports></host>`+"\n",
+			xmlEscape(row.IP), addrType, row.Port, state, xmlEscape(row.SNI), xmlEscape(row.CDN))
 	}
 	_, _ = fmt.Fprintln(w, `</nmaprun>`)
 }
@@ -451,23 +461,18 @@ func (r *scanRequest) normalize() {
 	if r.JitterMS < 0 {
 		r.JitterMS = 0
 	}
+	r.TLSFingerprint = normalizeTLSFingerprint(r.TLSFingerprint)
 }
 
 func probe(ctx context.Context, target string, port int, req scanRequest, batchNo int) result {
 	res := result{Target: target, Port: port, BatchNumber: batchNo, CDN: "unknown"}
-	ip, sni, err := resolveTarget(target, req.SNIs)
+	ip, sni, err := resolveTarget(target)
 	res.IP, res.SNI = ip, sni
 	if err != nil {
 		res.Error = err.Error()
 		return res
 	}
-	snis := []string{sni}
-	if req.MultiSNI && sni == "" {
-		snis = req.SNIs
-	}
-	if len(snis) == 0 {
-		snis = []string{""}
-	}
+	snis := candidateSNIs(sni, req.SNIs, req.MultiSNI)
 
 	start := time.Now()
 	res.TCP = tcp(ctx, ip, port, req.TimeoutMS)
@@ -477,20 +482,19 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 		if ctx.Err() != nil {
 			break
 		}
-		if candidateSNI == "" {
-			continue
-		}
-		tlsInfo, tlsOK := tlsProbe(ctx, ip, port, candidateSNI, req.TimeoutMS)
+		fingerprint := chooseTLSFingerprint(req.TLSFingerprint)
+		tlsInfo, tlsOK := tlsProbe(ctx, ip, port, candidateSNI, req.TimeoutMS, fingerprint)
 		if tlsOK {
 			res.TLS = true
 			res.SNI = candidateSNI
 			res.TLSVersion = tlsInfo.Version
 			res.TLSCipher = tlsInfo.Cipher
 			res.ALPN = tlsInfo.ALPN
+			res.TLSFingerprint = fingerprint
 			res.CertSubject = tlsInfo.Subject
 			res.CDN = detectCDN(ip, candidateSNI, tlsInfo.Subject)
 			if req.HTTPProbe {
-				res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader = httpProbe(ctx, ip, port, candidateSNI, req.HTTPPath, req.TimeoutMS)
+				res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader, res.AltSvc, res.HTTP3Hint = httpProbe(ctx, ip, port, candidateSNI, req.HTTPPath, req.TimeoutMS, fingerprint)
 			}
 			break
 		}
@@ -499,7 +503,7 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 	return res
 }
 
-func resolveTarget(target string, snis []string) (string, string, error) {
+func resolveTarget(target string) (string, string, error) {
 	if net.ParseIP(target) != nil {
 		return target, "", nil
 	}
@@ -520,6 +524,24 @@ func resolveTarget(target string, snis []string) (string, string, error) {
 	return "", "", errors.New("no IP address")
 }
 
+func candidateSNIs(resolvedSNI string, corpus []string, multiSNI bool) []string {
+	if multiSNI {
+		candidates := make([]string, 0, len(corpus)+1)
+		if strings.TrimSpace(resolvedSNI) != "" {
+			candidates = append(candidates, resolvedSNI)
+		}
+		candidates = append(candidates, corpus...)
+		return unique(candidates)
+	}
+	if strings.TrimSpace(resolvedSNI) != "" {
+		return []string{resolvedSNI}
+	}
+	if len(corpus) > 0 {
+		return []string{corpus[0]}
+	}
+	return []string{""}
+}
+
 func tcp(ctx context.Context, ip string, port int, timeoutMS int) bool {
 	d := net.Dialer{Timeout: time.Duration(timeoutMS) * time.Millisecond}
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
@@ -537,17 +559,13 @@ type tlsInfo struct {
 	Subject string
 }
 
-func tlsProbe(ctx context.Context, ip string, port int, sni string, timeoutMS int) (tlsInfo, bool) {
-	d := net.Dialer{Timeout: time.Duration(timeoutMS) * time.Millisecond}
-	conn, err := tls.DialWithDialer(&d, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)), &tls.Config{
-		ServerName: sni, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"},
-	})
+func tlsProbe(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (tlsInfo, bool) {
+	conn, err := dialUTLS(ctx, ip, port, sni, timeoutMS, fingerprint)
 	if err != nil {
 		return tlsInfo{}, false
 	}
-	_ = conn.SetDeadline(time.Now().Add(time.Duration(timeoutMS) * time.Millisecond))
 	state := conn.ConnectionState()
-	info := tlsInfo{Version: tlsVersionName(state.Version), Cipher: tls.CipherSuiteName(state.CipherSuite), ALPN: state.NegotiatedProtocol}
+	info := tlsInfo{Version: tlsVersionName(state.Version), Cipher: cipherSuiteName(state.CipherSuite), ALPN: state.NegotiatedProtocol}
 	if len(state.PeerCertificates) > 0 {
 		info.Subject = state.PeerCertificates[0].Subject.String()
 	}
@@ -555,22 +573,22 @@ func tlsProbe(ctx context.Context, ip string, port int, sni string, timeoutMS in
 	return info, ctx.Err() == nil
 }
 
-func httpProbe(ctx context.Context, ip string, port int, sni, path string, timeoutMS int) (bool, int, string, string) {
-	d := net.Dialer{Timeout: time.Duration(timeoutMS) * time.Millisecond}
-	conn, err := tls.DialWithDialer(&d, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)), &tls.Config{
-		ServerName: sni, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"},
-	})
+func httpProbe(ctx context.Context, ip string, port int, sni, path string, timeoutMS int, fingerprint string) (bool, int, string, string, string, bool) {
+	conn, err := dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"http/1.1"})
 	if err != nil {
-		return false, 0, "", ""
+		return false, 0, "", "", "", false
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(time.Duration(timeoutMS) * time.Millisecond))
-	_, _ = fmt.Fprintf(conn, "HEAD %s?cachebuster=%d HTTP/1.1\r\nHost: %s\r\nUser-Agent: MaybeScanner/1.2\r\nConnection: close\r\n\r\n", path, time.Now().UnixNano(), sni)
+	host := strings.TrimSpace(sni)
+	if host == "" {
+		host = ip
+	}
+	_, _ = fmt.Fprintf(conn, "HEAD %s?cachebuster=%d HTTP/1.1\r\nHost: %s\r\nUser-Agent: MaybeScanner/1.2\r\nConnection: close\r\n\r\n", path, time.Now().UnixNano(), host)
 	reader := pooledReader(conn)
 	defer putReader(reader)
 	line, err := reader.ReadString('\n')
 	status := parseHTTPStatus(line)
-	server, cache := "", ""
+	server, cache, altSvc := "", "", ""
 	for i := 0; i < 48; i++ {
 		header, hErr := reader.ReadString('\n')
 		if hErr != nil || strings.TrimSpace(header) == "" {
@@ -586,23 +604,137 @@ func httpProbe(ctx context.Context, ip string, port int, sni, path string, timeo
 			}
 			cache += strings.TrimSpace(header)
 		}
+		if strings.HasPrefix(lower, "alt-svc:") {
+			altSvc = strings.TrimSpace(header[len("alt-svc:"):])
+		}
 	}
-	return ctx.Err() == nil && err == nil && status > 0 && status < 500, status, server, cache
+	return ctx.Err() == nil && err == nil && status > 0 && status < 500, status, server, cache, altSvc, strings.Contains(strings.ToLower(altSvc), "h3")
+}
+
+func dialUTLS(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (*tls.UConn, error) {
+	return dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"h2", "http/1.1"})
+}
+
+func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, nextProtos []string) (*tls.UConn, error) {
+	d := net.Dialer{Timeout: time.Duration(timeoutMS) * time.Millisecond}
+	rawConn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
+	_ = rawConn.SetDeadline(deadline)
+	serverName := strings.TrimSpace(sni)
+	conn := tls.UClient(rawConn, &tls.Config{
+		ServerName: serverName, MinVersion: tls.VersionTLS12, NextProtos: nextProtos,
+		// This is a scanner: continue handshakes so mismatched SNI/Host routes and
+		// edge certificates can be measured and reported instead of hidden as TLS failures.
+		InsecureSkipVerify: true,
+	}, clientHelloID(fingerprint))
+	if err := conn.Handshake(); err != nil {
+		_ = rawConn.Close()
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	_ = conn.SetDeadline(deadline)
+	return conn, nil
+}
+
+func normalizeTLSFingerprint(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "auto", "rotate":
+		return "rotate"
+	case "chrome", "firefox", "ios", "randomized", "randomized-no-alpn":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return "rotate"
+	}
+}
+
+func chooseTLSFingerprint(mode string) string {
+	if mode != "rotate" {
+		return mode
+	}
+	choices := []string{"chrome", "firefox", "randomized"}
+	return choices[rand.Intn(len(choices))]
+}
+
+func clientHelloID(fingerprint string) tls.ClientHelloID {
+	switch fingerprint {
+	case "chrome":
+		return tls.HelloChrome_Auto
+	case "firefox":
+		return tls.HelloFirefox_Auto
+	case "ios":
+		return tls.HelloIOS_Auto
+	case "randomized-no-alpn":
+		return tls.HelloRandomizedNoALPN
+	default:
+		return tls.HelloRandomizedALPN
+	}
+}
+
+func cipherSuiteName(id uint16) string {
+	switch id {
+	case 0x1301:
+		return "TLS_AES_128_GCM_SHA256"
+	case 0x1302:
+		return "TLS_AES_256_GCM_SHA384"
+	case 0x1303:
+		return "TLS_CHACHA20_POLY1305_SHA256"
+	case 0xc02b:
+		return "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+	case 0xc02f:
+		return "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+	case 0xc02c:
+		return "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+	case 0xc030:
+		return "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+	case 0xcca9:
+		return "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305"
+	case 0xcca8:
+		return "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
+	default:
+		return fmt.Sprintf("0x%04x", id)
+	}
 }
 
 func score(r result) int {
 	s := 0
-	if r.HTTP {
-		s += 60
-	}
-	if r.TLS {
-		s += 40
-	}
 	if r.TCP {
 		s += 20
 	}
+	if r.TLS {
+		s += 35
+	}
+	if r.HTTP {
+		s += 35
+	}
+	if strings.EqualFold(r.TLSVersion, "TLS1.3") {
+		s += 8
+	}
+	if strings.EqualFold(r.ALPN, "h2") {
+		s += 7
+	}
+	if r.HTTP3Hint {
+		s += 6
+	}
+	if r.CDN != "" && r.CDN != "unknown" {
+		s += 8
+	}
+	if r.TLSFingerprint != "" {
+		s += 3
+	}
 	if r.LatencyMS > 0 {
-		s += max(0, 40-int(r.LatencyMS/25))
+		s += max(0, 45-int(math.Log1p(float64(r.LatencyMS))*8))
+	}
+	if r.Error != "" {
+		s -= 8
+	}
+	if s < 0 {
+		return 0
 	}
 	return s
 }

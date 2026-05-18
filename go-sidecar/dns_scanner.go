@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"runtime"
@@ -249,175 +246,11 @@ func parseDNSMessage(msg *dns.Msg) parsedDNS {
 	return out
 }
 
-func buildDNSQuery(domain string, qtype uint16, edns bool) ([]byte, error) {
-	if domain == "" {
-		return nil, errors.New("empty domain")
-	}
-	buf := make([]byte, 12, 512)
-	binary.BigEndian.PutUint16(buf[0:2], uint16(rand.Intn(65535)))
-	binary.BigEndian.PutUint16(buf[2:4], 0x0100)
-	binary.BigEndian.PutUint16(buf[4:6], 1)
-	if edns {
-		binary.BigEndian.PutUint16(buf[10:12], 1)
-	}
-	for _, label := range strings.Split(strings.TrimSuffix(domain, "."), ".") {
-		if len(label) > 63 {
-			return nil, errors.New("label too long")
-		}
-		buf = append(buf, byte(len(label)))
-		buf = append(buf, label...)
-	}
-	buf = append(buf, 0, byte(qtype>>8), byte(qtype), 0, 1)
-	if edns {
-		buf = append(buf, 0, 0, 41, 16, 0, 0, 0x80, 0, 0, 0)
-	}
-	return buf, nil
-}
-
-func parseDNSResponse(buf []byte) (parsedDNS, error) {
-	var out parsedDNS
-	if len(buf) < 12 {
-		return out, errors.New("short dns response")
-	}
-	flags := binary.BigEndian.Uint16(buf[2:4])
-	out.rcode = int(flags & 0x000f)
-	out.aa = flags&0x0400 != 0
-	out.ra = flags&0x0080 != 0
-	out.ad = flags&0x0020 != 0
-	qd := int(binary.BigEndian.Uint16(buf[4:6]))
-	an := int(binary.BigEndian.Uint16(buf[6:8]))
-	ar := int(binary.BigEndian.Uint16(buf[10:12]))
-	off := 12
-	for i := 0; i < qd; i++ {
-		var err error
-		off, _, err = readDNSName(buf, off)
-		if err != nil || off+4 > len(buf) {
-			return out, errors.New("bad question")
-		}
-		off += 4
-	}
-	for i := 0; i < an; i++ {
-		next, text, err := readDNSRecord(buf, off)
-		if err != nil {
-			return out, err
-		}
-		off = next
-		if text != "" {
-			out.answers = append(out.answers, text)
-		}
-	}
-	for i := 0; i < ar && off < len(buf); i++ {
-		next, text, err := readDNSRecord(buf, off)
-		if err != nil {
-			break
-		}
-		if text == "OPT" {
-			out.edns = true
-		}
-		off = next
-	}
-	return out, nil
-}
-
-func readDNSRecord(buf []byte, off int) (int, string, error) {
-	var err error
-	off, _, err = readDNSName(buf, off)
-	if err != nil || off+10 > len(buf) {
-		return off, "", errors.New("bad rr")
-	}
-	typ := binary.BigEndian.Uint16(buf[off : off+2])
-	off += 8
-	rdlen := int(binary.BigEndian.Uint16(buf[off : off+2]))
-	off += 2
-	if off+rdlen > len(buf) {
-		return off, "", errors.New("bad rdata")
-	}
-	data := buf[off : off+rdlen]
-	next := off + rdlen
-	switch typ {
-	case 1:
-		if len(data) == 4 {
-			return next, net.IP(data).String(), nil
-		}
-	case 28:
-		if len(data) == 16 {
-			return next, net.IP(data).String(), nil
-		}
-	case 2, 5, 6:
-		_, name, e := readDNSName(buf, off)
-		return next, name, e
-	case 15:
-		if len(data) > 2 {
-			_, name, e := readDNSName(buf, off+2)
-			return next, name, e
-		}
-	case 16:
-		if len(data) > 1 {
-			return next, string(data[1:]), nil
-		}
-	case 41:
-		return next, "OPT", nil
-	}
-	return next, "", nil
-}
-
-func readDNSName(buf []byte, off int) (int, string, error) {
-	var labels []string
-	original := off
-	jumped := false
-	for depth := 0; depth < 20; depth++ {
-		if off >= len(buf) {
-			return off, "", errors.New("name overflow")
-		}
-		l := int(buf[off])
-		if l == 0 {
-			off++
-			if jumped {
-				return original + 2, strings.Join(labels, "."), nil
-			}
-			return off, strings.Join(labels, "."), nil
-		}
-		if l&0xc0 == 0xc0 {
-			if off+1 >= len(buf) {
-				return off, "", errors.New("bad pointer")
-			}
-			ptr := int(binary.BigEndian.Uint16(buf[off:off+2]) & 0x3fff)
-			if !jumped {
-				original = off
-			}
-			off = ptr
-			jumped = true
-			continue
-		}
-		off++
-		if off+l > len(buf) {
-			return off, "", errors.New("bad label")
-		}
-		labels = append(labels, string(buf[off:off+l]))
-		off += l
-	}
-	return off, "", errors.New("pointer loop")
-}
-
 func dnsTypeCode(qtype string) uint16 {
-	switch strings.ToUpper(qtype) {
-	case "A":
-		return 1
-	case "NS":
-		return 2
-	case "CNAME":
-		return 5
-	case "SOA":
-		return 6
-	case "MX":
-		return 15
-	case "TXT":
-		return 16
-	case "AAAA":
-		return 28
-	default:
-		return 0
+	if code, ok := dns.StringToType[strings.ToUpper(strings.TrimSpace(qtype))]; ok {
+		return code
 	}
+	return 0
 }
 
 func scoreDNS(r dnsResult) int {

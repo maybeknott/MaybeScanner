@@ -22,7 +22,7 @@ This repository is focused only on scanner functionality. The active product sur
 
 The Android UI is Java/XML based and organized around guided scanner controls, provider sampling, workflow stages, result filters, visual density modes, high-contrast result semantics, haptic result copy, and beginner-readable parameter explanations.
 
-The Go sidecar is a standalone HTTP service. It uses structured `slog` logging, graceful HTTP shutdown, IPv4/IPv6 target parsing, ALPN negotiation for `h2` and `http/1.1`, and `github.com/miekg/dns` for DNS queries.
+The Go sidecar is a standalone HTTP service. It uses structured `slog` logging, graceful HTTP shutdown, IPv4/IPv6 target parsing, uTLS ClientHello rotation, ALPN negotiation for `h2` and `http/1.1`, Alt-Svc HTTP/3 hint capture, and `github.com/miekg/dns` for DNS queries.
 
 The sidecar also uses pooled HTTP readers, bounded CIDR expansion, dynamic safety-prefix loading from `go-sidecar/assets/do_not_scan_cidrs.txt`, and adaptive scan backoff when recent results show a high timeout/reset ratio.
 
@@ -113,6 +113,7 @@ The dashboard tracks scan throughput, pass rates, timeout/reset rates, goroutine
 `.github/workflows/build.yml` is the canonical clean build path. It:
 
 - Downloads Go modules with `go mod tidy` and `go mod download`.
+- Uploads the resolved `go-sidecar/go.sum` so the GitHub worker can finish dependency lock updates when local networks block module downloads.
 - Runs `go test ./...` for the sidecar.
 - Builds Linux, Windows, and macOS sidecar binaries.
 - Downloads Gradle dependencies before Android compilation.
@@ -121,6 +122,17 @@ The dashboard tracks scan throughput, pass rates, timeout/reset rates, goroutine
 - Publishes `ghcr.io/<owner>/<repo>-deps:<sha>` and `ghcr.io/<owner>/<repo>-deps:latest`.
 - Uses BuildKit `gha` and registry cache layers so the dependency image reuses prior Go/Gradle layers and only refreshes changed dependency inputs.
 - Checks whether dependency manifests changed or the image is missing before publishing the dependency image, so app-only commits do not rebuild dependency layers from zero.
+
+## Support
+
+Project repository: [MaybeScanner](https://github.com/maybeknott/MaybeScanner/)
+
+Optional support for ongoing development:
+
+- BTC: `bc1qt2mxzmlcv3re4pjemshejzq0hj3c8dgp0e5tvx`
+- EVM-compatible networks such as ETH/ERC20/BNB/BEP20: `0x8988ed09DA218799e99Fb1E94243cC1C1cB41A40`
+
+Please verify the asset and network before sending funds. This section is informational and optional; MaybeScanner remains fully usable without donations.
 
 ## Signing
 

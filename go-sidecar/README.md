@@ -9,6 +9,8 @@ The sidecar is a standalone HTTP service for higher-volume edge and DNS scans. I
 - Standards-based DNS scans using `github.com/miekg/dns`.
 - IPv4 and IPv6 target parsing.
 - ALPN validation for `h2` and `http/1.1`.
+- uTLS ClientHello fingerprint selection and rotation for Chrome, Firefox, iOS, and randomized TLS probes.
+- Alt-Svc HTTP/3 hint capture from HTTP probe responses.
 - TLS certificate and HTTP header metadata capture.
 - CDN classification hints.
 - Randomized target ordering, pacing, and jitter controls.
@@ -72,9 +74,9 @@ That image is cached with BuildKit `gha` and registry layers so dependency downl
 
 ## Edge Scan Request
 
-`POST /api/scan` accepts JSON with targets, SNIs, ports, HTTP path, worker count, timeout, and optional pacing controls. Results stream as each target is processed, which keeps memory use predictable during large scans.
+`POST /api/scan` accepts JSON with targets, SNIs, ports, HTTP path, worker count, timeout, optional pacing controls, and `tls_fingerprint`. Valid fingerprint values are `rotate`, `chrome`, `firefox`, `ios`, `randomized`, and `randomized-no-alpn`. Results stream as each target is processed, which keeps memory use predictable during large scans.
 
-Typical result fields include target, IP, port, SNI, TCP status, TLS status, HTTP status, latency, ALPN, certificate subject/issuer/SAN values, server headers, CDN hint, and score.
+Typical result fields include target, IP, port, SNI, TCP status, TLS status, HTTP status, latency, ALPN, selected TLS fingerprint, Alt-Svc and HTTP/3 hints, certificate subject/issuer/SAN values, server headers, CDN hint, and score.
 
 ## DNS Scan Request
 
@@ -113,6 +115,17 @@ http://127.0.0.1:10808/grafana-dashboard.json
 ```
 
 Dashboard panels include scan throughput, HTTP/TLS pass rates, timeout/reset rates, goroutines, and heap usage.
+
+## Support
+
+Project repository: [MaybeScanner](https://github.com/maybeknott/MaybeScanner/)
+
+Optional support for ongoing development:
+
+- BTC: `bc1qt2mxzmlcv3re4pjemshejzq0hj3c8dgp0e5tvx`
+- EVM-compatible networks such as ETH/ERC20/BNB/BEP20: `0x8988ed09DA218799e99Fb1E94243cC1C1cB41A40`
+
+Please verify the asset and network before sending funds.
 
 ## Safe Operating Guidance
 
