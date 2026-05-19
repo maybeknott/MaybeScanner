@@ -8,13 +8,18 @@ This repository is focused only on scanner functionality. The active product sur
 
 - Android scanner activity with foreground scanning, live progress, filtered result copy/export, home-screen widget, and Quick Settings tile.
 - Three-part app model: `Sources` for scan inputs, `Results` for cards/filtering/export, and `Diagnostics` for logs, network context, support, and radio tools.
+- Sticky top navigation with swipe gestures between `Sources`, `Results`, and `Diagnostics`.
+- Source-health summary that separates managed corpora from manual additions, estimates expanded endpoints, and explains phone-load posture before a scan starts.
+- Managed-source sampling uses broad presets plus per-source `-` / numeric / `+` / `All` controls, so selected corpora stay out of the manual target field.
 - Provider-separated target corpora for community edge IPs, community `/24` CIDRs, Akamai, AWS CloudFront, Fastly, Cloudflare, GitHub Pages, Azure Front Door, Google CDN, Bunny CDN, StackPath/Edgio, and conventional CDN/cloud ranges.
 - Custom user targets: IPv4, IPv6, domains, CIDRs, and hyphen ranges.
-- Scan profiles: Quick TCP, Standard TLS, Deep HTTP + SNI, and Verify CDN edge.
+- IP-first scan model: MaybeScanner scans endpoint targets directly and extracts host hints from TLS/HTTP evidence after results arrive.
+- Scan profiles: Quick TCP, Standard TLS, Deep HTTP, and Verify CDN edge.
 - Workflow modes: run one selected profile, run the automatic TCP to TLS to HTTP to Verify ladder, or run manually selected scanner stages.
-- Result filters for working status, SNI/TLS/HTTP status, TLS 1.3, CDN text, SNI text, certificate text, max latency, and minimum score.
-- Sort modes for newest, latency, score, SNI, TLS-first, HTTP-first, and CDN grouping.
-- Export formats for JSON, CSV, line-separated IPs, comma-separated IPs, and IP/SNI pairs.
+- Result filters for working status, TLS/HTTP status, TLS 1.3, CDN text, extracted host-hint text, certificate text, max latency, and minimum score.
+- Quick result buttons for working endpoints, TLS/HTTP evidence, and best-per-IP ranking.
+- Sort modes for newest, latency, score, CDN, extracted host hint, TLS-first, and HTTP-first.
+- Export formats for JSON, CSV, line-separated IPs, comma-separated IPs, and IP host hints.
 - Shizuku-backed radio diagnostics for explicit user-controlled network-mode reads and guarded LTE/5G/Auto writes on supported devices.
 - Optional Go sidecar with streaming scan results, standards-based DNS probing, Prometheus-style metrics, Grafana dashboard JSON, Nmap XML export, ALPN capture, server/cache header capture, random scan order, optional pacing, and jitter controls.
 - Safety mode with bundled do-not-scan CIDRs, strict CIDR expansion caps, reserved/special-use address skipping, pacing, jitter, and adaptive backoff when timeout/reset rates rise.
@@ -22,7 +27,7 @@ This repository is focused only on scanner functionality. The active product sur
 
 ## Current Status
 
-The Android UI is Java/programmatic-view based and organized around `Sources`, `Results`, and `Diagnostics`. Sources owns presets, target queues, SNI routes, scan volume, workflow, and performance. Results owns visual cards, filters, provider narrowing, sort, pagination, density, copy, and export. Diagnostics owns logs, network status, Shizuku radio controls, support links, and project reference material.
+The Android UI is Java/programmatic-view based and organized around `Sources`, `Results`, and `Diagnostics`. Sources owns managed IP corpora, custom target additions, scan volume, workflow, performance, and the source-health panel. Results owns visual cards, quick filters, provider narrowing, extracted host hints from result metadata, sort, pagination, density, copy, and export. Diagnostics owns logs, enriched network status, Shizuku radio controls, support links, and project reference material.
 
 The Go sidecar is a standalone HTTP service. It uses structured `slog` logging, graceful HTTP shutdown, IPv4/IPv6 target parsing, uTLS ClientHello rotation, ALPN negotiation for `h2` and `http/1.1`, Alt-Svc HTTP/3 hint capture, and `github.com/miekg/dns` for DNS queries.
 
@@ -32,7 +37,7 @@ The sidecar also uses pooled HTTP readers, bounded CIDR expansion, dynamic safet
 
 Provider corpora live under `app/src/main/assets/scan-corpora`.
 
-Each source is parsed independently so users can combine several provider families in one scan. Per-source controls decide how many entries to load from each source. `0` means all entries from that source. `Total sample` controls the final expanded target sample for a run. Large CIDRs are sampled to avoid expanding very large ranges into memory.
+Each source is parsed independently so users can combine several provider families in one scan. Per-source steppers decide how many entries to load from each managed source: use `-` / `+` for small adjustments, type an exact number when needed, or tap `All` to use the complete source (`0`). Managed samples stay summarized as source state and are not pasted into the custom target text field; that field is reserved for manual additions such as one-off IPs, domains, CIDRs, or ranges. The source-health panel shows managed token count, custom token count, expanded endpoint estimate, final Total-cap count, and whether the current settings are light, balanced, or high-load for a phone. Compact density caps card rendering and skips heavy visualizations so mode changes stay responsive on slower devices.
 
 ## Scan Workflows
 

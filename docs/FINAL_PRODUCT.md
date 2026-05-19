@@ -2,9 +2,24 @@
 
 MaybeScanner is a scanner-first Android product with an optional Go sidecar. The final product model is:
 
-- `Sources`: choose corpora, custom targets, SNI routes, workflow stages, scan volume, timeout, threads, and performance posture.
-- `Results`: inspect result cards, filter, sort, paginate, change visualization/density, copy, and export the visible result set.
-- `Diagnostics`: inspect logs, network state, Shizuku radio controls, support links, and project reference material.
+- `Sources`: choose managed IP corpora, custom target additions, workflow stages, scan volume, timeout, threads, and performance posture.
+- `Results`: inspect result cards, extracted host hints, quick-filter common views, sort, paginate, change visualization/density, copy, and export the visible result set.
+- `Diagnostics`: inspect logs, enriched network state, Shizuku radio controls, support links, and project reference material.
+
+## Product Scope
+
+MaybeScanner is the IP-first product. It scans endpoint targets directly and does not maintain an IP/SNI route-pairing model. Hostnames discovered from TLS certificates, HTTP metadata, and result evidence are treated as extracted host hints in Results.
+
+MaybeEdgeScanner is the route-pairing sibling for SNI-heavy edge tests. Keeping this split avoids confusing Scanner users with route controls that do not shape its core scan.
+
+## Interaction Model
+
+- Sticky top tabs keep `Sources`, `Results`, and `Diagnostics` visible.
+- Horizontal swipes move between tabs.
+- Managed source selection, sample presets, per-source steppers, and custom target additions are separated.
+- Compact density is treated as a performance mode: it caps rendered cards and avoids heavyweight visual panels while keeping result cards readable.
+- The source-health card summarizes managed tokens, manual tokens, endpoint expansion, cap behavior, and load posture.
+- Results quick buttons jump to working endpoints, TLS/HTTP evidence, or best-per-IP ranking without changing the scan queue.
 
 ## Release Artifacts
 
@@ -15,6 +30,12 @@ The Android builder emits three release APK families:
 - `MaybeScanner-armv8-release.apk`
 
 The universal APK is the safest public default. ABI-specific APKs are produced for release-channel clarity and future native-library readiness.
+
+## Publication Notes
+
+Public release text should describe MaybeScanner as an authorized IP endpoint scanner with optional Shizuku radio diagnostics. It should not market VPN behavior, SNI/IP route pairing, exploit verification, stealth scanning, or automatic radio switching.
+
+Release tags are generated from version, versionCode, workflow run number, and commit SHA so new runs do not overwrite an old `v1.0.0` release.
 
 ## Shizuku Scope
 
