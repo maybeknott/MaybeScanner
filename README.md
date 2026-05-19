@@ -7,6 +7,7 @@ This repository is focused only on scanner functionality. The active product sur
 ## Capabilities
 
 - Android scanner activity with foreground scanning, live progress, filtered result copy/export, home-screen widget, and Quick Settings tile.
+- Three-part app model: `Sources` for scan inputs, `Results` for cards/filtering/export, and `Diagnostics` for logs, network context, support, and radio tools.
 - Provider-separated target corpora for community edge IPs, community `/24` CIDRs, Akamai, AWS CloudFront, Fastly, Cloudflare, GitHub Pages, Azure Front Door, Google CDN, Bunny CDN, StackPath/Edgio, and conventional CDN/cloud ranges.
 - Custom user targets: IPv4, IPv6, domains, CIDRs, and hyphen ranges.
 - Scan profiles: Quick TCP, Standard TLS, Deep HTTP + SNI, and Verify CDN edge.
@@ -14,13 +15,14 @@ This repository is focused only on scanner functionality. The active product sur
 - Result filters for working status, SNI/TLS/HTTP status, TLS 1.3, CDN text, SNI text, certificate text, max latency, and minimum score.
 - Sort modes for newest, latency, score, SNI, TLS-first, HTTP-first, and CDN grouping.
 - Export formats for JSON, CSV, line-separated IPs, comma-separated IPs, and IP/SNI pairs.
+- Shizuku-backed radio diagnostics for explicit user-controlled network-mode reads and guarded LTE/5G/Auto writes on supported devices.
 - Optional Go sidecar with streaming scan results, standards-based DNS probing, Prometheus-style metrics, Grafana dashboard JSON, Nmap XML export, ALPN capture, server/cache header capture, random scan order, optional pacing, and jitter controls.
 - Safety mode with bundled do-not-scan CIDRs, strict CIDR expansion caps, reserved/special-use address skipping, pacing, jitter, and adaptive backoff when timeout/reset rates rise.
 - GitHub Actions worker that downloads Go and Gradle dependencies, builds sidecar binaries, builds Android artifacts, uploads build outputs, and publishes a dependency-warmed GHCR container.
 
 ## Current Status
 
-The Android UI is Java/XML based and organized around guided scanner controls, provider sampling, workflow stages, result filters, visual density modes, high-contrast result semantics, haptic result copy, and beginner-readable parameter explanations.
+The Android UI is Java/programmatic-view based and organized around `Sources`, `Results`, and `Diagnostics`. Sources owns presets, target queues, SNI routes, scan volume, workflow, and performance. Results owns visual cards, filters, provider narrowing, sort, pagination, density, copy, and export. Diagnostics owns logs, network status, Shizuku radio controls, support links, and project reference material.
 
 The Go sidecar is a standalone HTTP service. It uses structured `slog` logging, graceful HTTP shutdown, IPv4/IPv6 target parsing, uTLS ClientHello rotation, ALPN negotiation for `h2` and `http/1.1`, Alt-Svc HTTP/3 hint capture, and `github.com/miekg/dns` for DNS queries.
 
@@ -51,8 +53,26 @@ $env:JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot'
 
 Generated APKs:
 
-- `app/build/outputs/apk/debug/MaybeScanner-debug.apk`
-- `app/build/outputs/apk/release/MaybeScanner-release.apk`
+- `app/build/outputs/apk/universal/debug/MaybeScanner-universal-debug.apk`
+- `app/build/outputs/apk/universal/release/MaybeScanner-universal-release.apk`
+- `app/build/outputs/apk/armv7/release/MaybeScanner-armv7-release.apk`
+- `app/build/outputs/apk/armv8/release/MaybeScanner-armv8-release.apk`
+
+The `universal` artifact is the default recommendation. `armv7` targets `armeabi-v7a`; `armv8` targets `arm64-v8a`. The app is mostly Java, so the split artifacts are primarily release-channel clarity and future native-library readiness rather than a runtime requirement.
+
+## Shizuku Radio Diagnostics
+
+Diagnostics includes a guarded Shizuku panel for users who explicitly want to inspect or change Android radio preference settings.
+
+- Uses the official `dev.rikka.shizuku` API and provider.
+- Requests Shizuku permission only after the user taps the action.
+- Reads common `preferred_network_mode` keys before/after changes.
+- Provides guarded `LTE only`, `5G/LTE`, and `Auto` actions with confirmation dialogs.
+- Provides a sanitized advanced key/value override for OEM and SIM-slot variants.
+- Does not expose arbitrary shell commands.
+- Does not run during scans or change radio state automatically.
+
+Android radio integers and keys vary by OEM, carrier, Android version, modem, and SIM slot. If a device behaves unexpectedly, use `Auto`, the Android network settings button, or the Shizuku readback output to restore the intended mode.
 
 ## Install Identity
 
@@ -117,8 +137,9 @@ The dashboard tracks scan throughput, pass rates, timeout/reset rates, goroutine
 - Runs `go test ./...` for the sidecar.
 - Builds Linux, Windows, and macOS sidecar binaries.
 - Downloads Gradle dependencies before Android compilation.
-- Builds Android artifacts through the existing build pipeline.
-- Uploads APK and sidecar artifacts.
+- Builds universal, armv7, and armv8 Android APK artifacts.
+- Verifies every signed release APK with `apksigner`.
+- Uploads all APK and sidecar artifacts.
 - Publishes `ghcr.io/<owner>/<repo>-deps:<sha>` and `ghcr.io/<owner>/<repo>-deps:latest`.
 - Uses BuildKit `gha` and registry cache layers so the dependency image reuses prior Go/Gradle layers and only refreshes changed dependency inputs.
 - Checks whether dependency manifests changed or the image is missing before publishing the dependency image, so app-only commits do not rebuild dependency layers from zero.

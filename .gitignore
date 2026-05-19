@@ -4,10 +4,20 @@ runtime/
 *.tmp
 *.bak
 
+# Generated binaries and archives
+*.exe
+*.dll
+*.so
+*.dylib
+dist/
+
 # Generated certificates (never commit private keys)
 mycert.crt
 mycert.key
 *.key
+*.jks
+*.keystore
+*.p12
 .signing/
 signing.properties
 
