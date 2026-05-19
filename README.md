@@ -7,10 +7,10 @@ This repository is focused only on scanner functionality. The active product sur
 ## Capabilities
 
 - Android scanner activity with foreground scanning, live progress, filtered result copy/export, home-screen widget, and Quick Settings tile.
-- Three-part app model: `Sources` for scan inputs, `Results` for cards/filtering/export, and `Diagnostics` for logs, network context, support, and radio tools.
-- Sticky top navigation with swipe gestures between `Sources`, `Results`, and `Diagnostics`.
+- Three-part app model: `Sources` for scan inputs, `Results` for cards/filtering/export/visualizations, and `Diagnostics` for logs, enriched network/system context, support, and radio tools.
+- Sticky full-width top navigation with swipe gestures between `Sources`, `Results`, and `Diagnostics`.
 - Source-health summary that separates managed corpora from manual additions, estimates expanded endpoints, and explains phone-load posture before a scan starts.
-- Managed-source sampling uses broad presets plus per-source `-` / numeric / `+` / `All` controls, so selected corpora stay out of the manual target field.
+- Checkbox-driven managed sources with compact exact sample counts and horizontal sample scrubbers. `0` means the complete source, so selected corpora stay out of the manual target field.
 - Provider-separated target corpora for community edge IPs, community `/24` CIDRs, Akamai, AWS CloudFront, Fastly, Cloudflare, GitHub Pages, Azure Front Door, Google CDN, Bunny CDN, StackPath/Edgio, and conventional CDN/cloud ranges.
 - Custom user targets: IPv4, IPv6, domains, CIDRs, and hyphen ranges.
 - IP-first scan model: MaybeScanner scans endpoint targets directly and extracts host hints from TLS/HTTP evidence after results arrive.
@@ -19,6 +19,7 @@ This repository is focused only on scanner functionality. The active product sur
 - Result filters for working status, TLS/HTTP status, TLS 1.3, CDN text, extracted host-hint text, certificate text, max latency, and minimum score.
 - Quick result buttons for working endpoints, TLS/HTTP evidence, and best-per-IP ranking.
 - Sort modes for newest, latency, score, CDN, extracted host hint, TLS-first, and HTTP-first.
+- Results include analytics, local stable observations, status heatmaps, latency distribution, CDN mix, and tap-to-copy result tiles.
 - Export formats for JSON, CSV, line-separated IPs, comma-separated IPs, and IP host hints.
 - Shizuku-backed radio diagnostics for explicit user-controlled network-mode reads and guarded LTE/5G/Auto writes on supported devices.
 - Optional Go sidecar with streaming scan results, standards-based DNS probing, Prometheus-style metrics, Grafana dashboard JSON, Nmap XML export, ALPN capture, server/cache header capture, random scan order, optional pacing, and jitter controls.
@@ -37,7 +38,7 @@ The sidecar also uses pooled HTTP readers, bounded CIDR expansion, dynamic safet
 
 Provider corpora live under `app/src/main/assets/scan-corpora`.
 
-Each source is parsed independently so users can combine several provider families in one scan. Per-source steppers decide how many entries to load from each managed source: use `-` / `+` for small adjustments, type an exact number when needed, or tap `All` to use the complete source (`0`). Managed samples stay summarized as source state and are not pasted into the custom target text field; that field is reserved for manual additions such as one-off IPs, domains, CIDRs, or ranges. The source-health panel shows managed token count, custom token count, expanded endpoint estimate, final Total-cap count, and whether the current settings are light, balanced, or high-load for a phone. Compact density caps card rendering and skips heavy visualizations so mode changes stay responsive on slower devices.
+Each source is parsed independently so users can combine several provider families in one scan. Enable or disable each family with its checkbox, then either type an exact sample count or scrub horizontally for coarse adjustment. A value of `0` uses the complete source. Managed samples stay summarized as source state and are not pasted into the custom target text field; that field is reserved for manual additions such as one-off IPs, domains, CIDRs, or ranges. The source-health panel shows managed token count, custom token count, expanded endpoint estimate, final Total-cap count, and whether the current settings are light, balanced, or high-load for a phone. Compact density caps card rendering and skips heavy visualizations so mode changes stay responsive on slower devices.
 
 ## Scan Workflows
 
@@ -71,13 +72,36 @@ Diagnostics includes a guarded Shizuku panel for users who explicitly want to in
 
 - Uses the official `dev.rikka.shizuku` API and provider.
 - Requests Shizuku permission only after the user taps the action.
+- Links directly to the official Shizuku GitHub release for APK install/update checks, while still linking the official setup guide.
+- Shows binder state, server version, and backend identity so users can distinguish root (`UID 0`) from ADB shell (`UID 2000`).
+- Includes a safe bridge probe that prints Android version, device identity, command reach, and current radio readback before any write is attempted.
 - Reads common `preferred_network_mode` keys before/after changes.
 - Provides guarded `LTE only`, `5G/LTE`, and `Auto` actions with confirmation dialogs.
 - Provides a sanitized advanced key/value override for OEM and SIM-slot variants.
 - Does not expose arbitrary shell commands.
 - Does not run during scans or change radio state automatically.
 
-Android radio integers and keys vary by OEM, carrier, Android version, modem, and SIM slot. If a device behaves unexpectedly, use `Auto`, the Android network settings button, or the Shizuku readback output to restore the intended mode.
+### Modern Android Compatibility
+
+Shizuku remains viable on newer phones, but the startup path depends on Android version and device policy:
+
+- Android 11 and newer: users can usually start Shizuku fully on-device through Android's Wireless debugging flow. This is the best path for modern non-rooted phones because it does not require a computer after setup.
+- Android 13 and newer: recent Shizuku releases include newer-platform startup improvements, including trusted-WLAN auto-start support on supported builds.
+- Android 16-era devices: current Shizuku releases are still being updated for new platform behavior. Use the latest official GitHub release when testing brand-new Android builds.
+- Android 10 and older: Shizuku can still be used, but non-rooted devices normally need computer ADB again after reboot.
+- Rooted devices: Shizuku can run with root, or users can use Sui. The app detects `UID 0` vs `UID 2000` so the diagnostics are honest about the backend.
+
+For our app, the direct GitHub Release link is preferable to making Google Play the main path because it is universal, version-visible, and works for users without Play access. The official Shizuku download page is still useful as a hub because it lists Play Store, GitHub, and F-Droid-style options.
+
+### Architecture Notes
+
+Shizuku does not magically grant every permission to this app. It supplies a privileged Binder bridge or a privileged process identity. ADB-backed Shizuku runs as shell (`UID 2000`), which has many Android shell permissions but is still constrained by SELinux, vendor policy, hidden API restrictions, modem/carrier behavior, and Android version changes. Root/Sui has broader reach (`UID 0`) but still deserves explicit user confirmation for risky actions.
+
+This app currently keeps Shizuku usage narrow: status checks, a safe bridge probe, readback, and guarded `settings` writes for radio preference keys. The deeper future refinement would be a Shizuku UserService/AIDL module for richer privileged APIs without parsing shell text. That is the right direction for anything beyond these small, auditable radio commands.
+
+Hidden API bypass libraries are intentionally not included right now. They are useful when calling restricted framework APIs directly from the app process, but this app currently uses Shizuku for narrow shell-backed diagnostics. Adding hidden API bypass before a real Binder/UserService need would add distribution risk without improving the current radio panel.
+
+Android radio integers, shell permissions, and settings keys vary by OEM, carrier, Android version, modem, and SIM slot. ADB-backed Shizuku is powerful but not the same as root; it can use many shell-granted Android permissions, but it cannot bypass every platform, SELinux, or vendor restriction. If a device behaves unexpectedly, use `Auto`, the Android network settings button, or the Shizuku readback output to restore the intended mode.
 
 ## Install Identity
 
@@ -184,6 +208,20 @@ Safety mode skips private, reserved, documentation, multicast, link-local, loopb
 ## Roadmap
 
 Planned safe improvements include Kotlin/Compose migration, MVVM state separation, coroutine-based scan orchestration, persistent scan history, foreground-service continuity, richer analytics, better accessibility semantics, optional GeoIP/ASN tagging from user-provided databases, expanded IPv6 testing, OpenAPI documentation, and deeper CI release automation.
+
+### Shizuku Roadmap
+
+These are high-ROI Shizuku-backed additions worth considering after the current Health Tile and guarded radio diagnostics:
+
+- Network Snapshot: read active network, DNS, Private DNS mode, proxy state, airplane mode, Wi-Fi/mobile state, and radio preference keys before and after scans.
+- Connectivity Repair Panel: guided, confirmation-based repair actions for Private DNS reset, proxy clearing, supported Wi-Fi subsystem recovery, and direct settings fallbacks.
+- Private DNS and Proxy Widget: show current values and offer explicit presets such as Off, Automatic, and custom hostname where Android permissions allow it.
+- SIM Slot Radio Matrix: expand the current readback into per-key/per-SIM display for `preferred_network_mode`, `preferred_network_mode1`, `preferred_network_mode2`, and OEM variants.
+- Per-App Network Firewall Check: inspect whether this app or user-selected helper apps are blocked by platform networking controls, with unblock-first UX.
+- Export Debug Bundle: copy/share scan config, Shizuku health, bridge probe output, network snapshot, Android version, and device model for support reports.
+- UserService/AIDL Backend: replace shell-text parsing for deeper privileged features with a typed Shizuku service once there is a clear feature that needs it.
+
+Lower-priority or avoid-for-now items include Wi-Fi password viewing, broad Hidden API bypass, deep modem hidden APIs, and automatic radio writes without device-specific validation.
 
 Advanced evasion, offensive reconnaissance, exploit verification, destructive active-defense payloads, and stealth traffic generation are outside the supported product direction, MAYBE :)
 
