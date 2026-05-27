@@ -7,7 +7,7 @@ Welcome to **MaybeScanner**! This guide is designed to help operators, network e
 ## 1. Quick Setup & Installation
 
 ### 1.1 Device Compatibility & Requirements
-* **Android OS**: Android 8.0 (API 26) through modern Android 16-era releases.
+* **Android OS**: Android 7.0 (API 24) through modern Android 16-era releases.
 * **Hardware Requirements**: Minimum 3GB RAM recommended for large multi-threaded scans.
 * **Privileged State**: Sui/Shizuku is fully optional but highly recommended to access mobile cellular diagnostics and baseband mutators.
 
@@ -79,7 +79,7 @@ The manual targets text area in `Sources` accepts complex inputs. You can combin
 
 MaybeScanner supports four core auditing profiles:
 1. **Quick TCP**: Measures basic port reachability and latency. Extremely fast, ideal for checking general uptime.
-2. **Standard TLS**: Performs complete TLS 1.3 handshakes, extracts certificate authorities, verified names, and cipher suites.
+2. **Standard TLS**: Performs complete TLS handshakes, extracts certificate chain observations (issuer/SAN/CN when available), and cipher-suite details.
 3. **Deep HTTP**: Upgrades the TCP/TLS probe to send a full `HEAD` request, verifying remote HTTP responses, server headers, and ALPN flags.
 4. **Verify CDN Edge**: Queries CDN metadata, checking headers for cache and provider identity.
 
