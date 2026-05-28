@@ -133,7 +133,7 @@ The companion Go sidecar includes a robust suite of defenses:
   ```go
   _ = conn.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
   ```
-* **Adaptive Backoff Scoping**: Binds the error ring-buffer *outside* of individual scanning batch loops. This preserves accurate, long-term latency contexts and protects upstream endpoints from load spikes.
+* **Adaptive Backoff Scoping**: Binds the error ring-buffer *outside* of individual scanning batch loops. This preserves accurate, long-term latency contexts and protects upstream services from load spikes.
 
 ---
 

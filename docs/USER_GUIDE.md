@@ -45,8 +45,8 @@ This is your scanning command center:
 ### Tab 2: Results
 Analyzes incoming telemetry findings in real time:
 * **Interactive Result Cards**: Tap any card to view detailed TLS versions, cipher suites, ALPN values, HTTP status codes, and certificate fingerprints.
-* **Visual Telemetry Graphs**: Direct real-time charts illustrating endpoint working ratios, latency distributions, and CDN distributions.
-* **Quick Action Filters**: Jump to "Working Endpoints," "Evidence Records," or the "Best Ranked per IP."
+* **Visual Telemetry Graphs**: Direct real-time charts illustrating working-IP ratios, latency distributions, and CDN distributions.
+* **Quick Action Filters**: Jump to "Working IPs," "Evidence Records," or the "Best Ranked per IP."
 * **Advanced Filter Bars**: Filter results instantly by status, known CDNs, latency caps, or quality scores.
 * **Flexible Export Panels**: Copy or export filtered targets as line-separated lists, JSON objects, or CSV files.
 
@@ -81,7 +81,7 @@ MaybeScanner supports four core auditing profiles:
 1. **Quick TCP**: Measures basic port reachability and latency. Extremely fast, ideal for checking general uptime.
 2. **Standard TLS**: Performs complete TLS handshakes, extracts certificate chain observations (issuer/SAN/CN when available), and cipher-suite details.
 3. **Deep HTTP**: Upgrades the TCP/TLS probe to send a full `HEAD` request, verifying remote HTTP responses, server headers, and ALPN flags.
-4. **Verify CDN Edge**: Queries CDN metadata, checking headers for cache and provider identity.
+4. **Verify CDN Edge**: Checks CDN identity, cache headers, and provider evidence.
 
 ---
 

@@ -1,6 +1,6 @@
 # MaybeScanner
 
-MaybeScanner is an Android network scanner focused on target-first endpoint checks (IP/domain inputs with optional SNI candidates), with an optional Go sidecar for higher-throughput scans and export/observability workflows.
+MaybeScanner is an Android network scanner focused on target-first IP checks (IP/domain inputs with optional SNI candidates), with an optional Go sidecar for higher-throughput scans and export/observability workflows.
 
 ## What It Does
 
@@ -29,7 +29,7 @@ MaybeScanner/
 From repository root:
 
 ```powershell
-.\gradlew.bat --no-daemon :app:lintUniversalDebug :app:assembleDebug
+.\gradlew.bat --no-daemon :app:lintUniversalDebug :app:assembleUniversalDebug
 ```
 
 From `go-sidecar/`:
