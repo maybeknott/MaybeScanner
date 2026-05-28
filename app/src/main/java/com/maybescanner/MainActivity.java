@@ -18,6 +18,7 @@ import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.ProxyInfo;
+import android.net.Uri;
 import android.graphics.Insets;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -77,6 +78,7 @@ public class MainActivity extends Activity {
     private static final String SUPPORT_GITHUB = "https://github.com/maybeknott/MaybeScanner/";
     private static final int SHIZUKU_REQUEST_CODE = 4601;
     private static final int NOTIFICATION_REQUEST_CODE = 4602;
+    private static final int IMPORT_TARGETS_REQUEST_CODE = 4603;
     private static final String[] RADIO_MODE_KEYS = {
             "preferred_network_mode",
             "preferred_network_mode0",
@@ -144,6 +146,7 @@ public class MainActivity extends Activity {
     private TextView shizukuHealthTileView, shizukuStatusView, shizukuNextStepView, shizukuOutputView;
     private TextView sourceSummaryView, sourceHealthView;
     private TextView scanPlanView;
+    private TextView targetInputStatsView;
     private EditText targetsInput, snisInput, totalInput, batchInput, threadsInput, timeoutInput;
     private EditText communitySampleInput, akamaiSampleInput, cloudfrontSampleInput, fastlySampleInput, cloudflareSampleInput, otherCdnSampleInput, customTargetSampleInput;
     private EditText portsInput, pathInput, maxLatencyInput, resultLimitInput, cdnFilterInput, certFilterInput, sniFilterInput, minQualityInput;
@@ -268,6 +271,18 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return;
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return;
         requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_REQUEST_CODE);
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != IMPORT_TARGETS_REQUEST_CODE || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        try {
+            appendToInput(targetsInput, readTextFromUri(data.getData(), 2 * 1024 * 1024));
+            renderScanPlanPreviews();
+            toast("Imported custom IP list");
+        } catch (IOException e) {
+            toast("Import failed: " + e.getMessage());
+        }
     }
 
     private void buildUi() {
@@ -395,7 +410,7 @@ public class MainActivity extends Activity {
         snisInput = area("Host hints are extracted from results");
 
         LinearLayout providerPanel = column();
-        providerPanel.addView(quietNote("Choose the IP sources to scan. Use 128 or 512 for a quick pass, or All when you intentionally want every available IP entry from a source."));
+        providerPanel.addView(quietNote("Choose IP sources and a sample size. Counts show estimated expanded IPs, so CIDR ranges read as their real scan size instead of a tiny line/token count."));
         communitySampleInput = input("256", true);
         akamaiSampleInput = input("128", true);
         cloudfrontSampleInput = input("128", true);
@@ -434,10 +449,13 @@ public class MainActivity extends Activity {
         metricsDashboardCard.addView(scanPlanView);
         targetTab.addView(metricsDashboardCard);
         targetTab.addView(section("Targets"));
-        targetTab.addView(quietNote("Typed IPs are manual additions or removals. Managed IP sources stay summarized above instead of being pasted into this text box."));
+        targetTab.addView(quietNote("Add custom IPs, domains, CIDR blocks, or ranges here. Small lists are previewed below; large pastes stay summarized so the screen does not flood with raw input."));
         customTargetSampleInput = input("0", true);
-        targetTab.addView(box("Typed IP limit (0 = all)", customTargetSampleInput));
+        customTargetSampleInput.setVisibility(View.GONE);
+        targetTab.addView(customInputActions(targetsInput, IMPORT_TARGETS_REQUEST_CODE, true));
         targetTab.addView(targetsInput);
+        targetInputStatsView = quietNote("Custom IPs: none");
+        targetTab.addView(targetInputStatsView);
         targetChipPreview = chipPanel();
         targetTab.addView(targetChipPreview);
         sniChipPreview = chipPanel();
@@ -470,14 +488,14 @@ public class MainActivity extends Activity {
         stepRow2.addView(stepHttp, weight());
         stepRow2.addView(stepVerify, weight());
         workflowPanel.addView(stepRow2);
-        targetTab.addView(collapsibleBox("Workflow and probe stages", workflowPanel, true));
+        targetTab.addView(collapsibleBox("Workflow and checks", workflowPanel, true));
 
         LinearLayout performancePanel = column();
         performancePanel.addView(quietNote("Presets set the total IP limit, batch size, threads, and timeout together so the batch can never exceed the run limit."));
         LinearLayout modeRow = row();
-        modeRow.addView(modeButton("Conservative", "15k IPs / 500 batch / 12 threads", 15000, 500, 12, 2500), weight());
-        modeRow.addView(modeButton("Balanced", "50k IPs / 2k batch / 32 threads", 50000, 2000, 32, 3000), weight());
-        modeRow.addView(modeButton("Aggressive", "250k IPs / 8k batch / 64 threads", 250000, 8000, 64, 5000), weight());
+        modeRow.addView(modeButton("Conservative", "25k IPs / 2.5k batch / 16 threads", 25000, 2500, 16, 2500), weight());
+        modeRow.addView(modeButton("Balanced", "120k IPs / 10k batch / 48 threads", 120000, 10000, 48, 3000), weight());
+        modeRow.addView(modeButton("Aggressive", "500k IPs / 50k batch / 128 threads", 500000, 50000, 128, 5000), weight());
         performancePanel.addView(modeRow);
 
         LinearLayout row2 = row();
@@ -606,6 +624,7 @@ public class MainActivity extends Activity {
         quickFilterRow.addView(quickTlsButton, weight());
         quickFilterRow.addView(quickBestButton, weight());
         filterPanel.addView(quickFilterRow);
+        filterPanel.addView(compactResultViewControls());
         filterPanel.addView(clearFiltersButton);
         liveTab.addView(collapsibleBox("Filter, sort, and page cards", filterPanel, true));
 
@@ -629,14 +648,6 @@ public class MainActivity extends Activity {
         exportPrivacyMode.setChecked(true);
         exportPanel.addView(exportPrivacyMode);
         liveTab.addView(collapsibleBox("Copy and export", exportPanel, false));
-        liveTab.addView(segmentedChoice("Visualization", new String[]{"Cards", "Heatmap"}, visualizationButtons, visualizationMode, index -> {
-            visualizationMode = index;
-            scheduleRender();
-        }));
-        liveTab.addView(segmentedChoice("Density", new String[]{"Comfort", "Contrast", "Compact"}, densityButtons, densityMode, index -> {
-            densityMode = index;
-            scheduleRender();
-        }));
         stableHistoryPanel = column();
         stableHistoryPanel.setBackground(glassBg(Color.rgb(9, 23, 34), Color.argb(90, 255, 255, 255)));
         stableHistoryPanel.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -681,10 +692,10 @@ public class MainActivity extends Activity {
         runDiagnosticsButton = button("Run Diagnostics", Color.rgb(24, 45, 58), Color.WHITE);
         runDiagnosticsButton.setOnClickListener(v -> runNetworkDiagnostics());
         diagCard.addView(runDiagnosticsButton);
-        diagnosticsOfflineMode = check("Offline diagnostics mode (no external probes)");
+        diagnosticsOfflineMode = check("Offline diagnostics mode (no external checks)");
         diagnosticsOfflineMode.setChecked(false);
         diagCard.addView(diagnosticsOfflineMode);
-        diagnosticsIncludePublicIp = check("Include public IP probe (api.ipify.org)");
+        diagnosticsIncludePublicIp = check("Include public IP lookup (api.ipify.org)");
         diagnosticsIncludePublicIp.setChecked(false);
         diagCard.addView(diagnosticsIncludePublicIp);
 
@@ -1036,6 +1047,10 @@ public class MainActivity extends Activity {
             @Override public Set<String> communityEdges(String ipAsset, String cidrAsset) {
                 return communityEdgeCorpus(ipAsset, cidrAsset);
             }
+
+            @Override public int estimatedIps(Collection<String> entries) {
+                return estimateExpandedTargetCount(entries, Integer.MAX_VALUE);
+            }
         };
     }
 
@@ -1044,63 +1059,138 @@ public class MainActivity extends Activity {
         return String.format(Locale.US, "%,d", count);
     }
 
+    private static String countLabel(long count) {
+        if (count <= 0) return "unknown";
+        return String.format(Locale.US, "%,d", count);
+    }
+
+    private static int[] samplePresetValues(int availableIps) {
+        if (availableIps <= 512) return new int[]{128, 512};
+        if (availableIps <= 2048) return new int[]{256, 1024};
+        if (availableIps <= 8192) return new int[]{512, 2048};
+        return new int[]{1024, 8192};
+    }
+
     private LinearLayout sourceControl(CheckBox enabled, EditText input, String detail, int availableIps) {
         LinearLayout panel = column();
         panel.setBackground(glassBg(Color.rgb(10, 24, 34), Color.argb(60, 255, 255, 255)));
         panel.setPadding(dp(7), dp(2), dp(7), dp(7));
         LinearLayout controls = row();
-        final int scrubberMax = 20000;
-        input.setEms(7);
-        input.setMinWidth(dp(76));
-        input.setMaxWidth(dp(112));
-        SeekBar scrubber = new SeekBar(this);
-        scrubber.setMax(scrubberMax);
-        scrubber.setProgress(clampInt(intValue(input, 0), 0, scrubberMax));
-        scrubber.setContentDescription(enabled.getText() + " IP count scrubber. Zero means all available entries.");
-        scrubber.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (!fromUser) return;
-                suppressUiRefresh = true;
-                input.setText(String.valueOf(progress));
-                input.setSelection(input.getText().length());
-                suppressUiRefresh = false;
-                renderScanPlanPreviews();
-            }
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-        });
-        input.addTextChangedListener(simpleWatcher(() -> {
-            int value = clampInt(intValue(input, 0), 0, scrubberMax);
-            if (scrubber.getProgress() != value) scrubber.setProgress(value);
-            renderScanPlanPreviews();
-        }));
+        input.setVisibility(View.GONE);
+        int[] presetValues = samplePresetValues(availableIps);
+        int current = intValue(input, 0);
+        if (current == 128 || current == 256 || current == 512) input.setText(String.valueOf(presetValues[0]));
+        input.addTextChangedListener(simpleWatcher(this::renderScanPlanPreviews));
         enabled.setOnClickListener(v -> renderScanPlanPreviews());
         controls.addView(enabled, new LinearLayout.LayoutParams(0, -2, 1));
-        controls.addView(input, fixedWidth(94));
         panel.addView(controls);
         LinearLayout presets = row();
-        presets.addView(samplePresetButton(input, scrubber, "128", 128), weight());
-        presets.addView(samplePresetButton(input, scrubber, "512", 512), weight());
-        presets.addView(samplePresetButton(input, scrubber, "All", 0), weight());
+        presets.addView(samplePresetButton(input, String.valueOf(presetValues[0]), presetValues[0]), weight());
+        presets.addView(samplePresetButton(input, String.valueOf(presetValues[1]), presetValues[1]), weight());
+        presets.addView(samplePresetButton(input, "All", 0), weight());
         panel.addView(presets);
-        panel.addView(scrubber, new LinearLayout.LayoutParams(-1, -2));
-        TextView hint = text(detail + "\nAvailable: " + countLabel(availableIps) + " IP entries. 128/512 are quick samples. All uses every available IP entry; type an exact count when needed.", 10, Color.rgb(155, 184, 198), false);
+        TextView hint = text(detail + "\nEstimated corpus: " + countLabel(availableIps) + " IPs. Use a sample for exploration, All for deliberate full-source scans, and add one-off custom IPs below.", 10, Color.rgb(155, 184, 198), false);
         panel.addView(hint);
         return panel;
     }
 
-    private Button samplePresetButton(EditText input, SeekBar scrubber, String label, int value) {
+    private Button samplePresetButton(EditText input, String label, int value) {
         Button b = button(label, Color.rgb(18, 41, 54), Color.WHITE);
         b.setOnClickListener(v -> {
             suppressUiRefresh = true;
             input.setText(String.valueOf(value));
             input.setSelection(input.getText().length());
             suppressUiRefresh = false;
-            scrubber.setProgress(Math.min(value, scrubber.getMax()));
             renderScanPlanPreviews();
         });
-        b.setContentDescription(label.equals("All") ? "Use every available IP entry from this source" : "Use " + label + " IP entries from this source");
+        b.setContentDescription(label.equals("All") ? "Use every estimated IP from this source" : "Use a sample of " + label + " IPs from this source");
         return b;
+    }
+
+    private LinearLayout customInputActions(EditText input, int importRequestCode, boolean includeBest) {
+        LinearLayout actions = row();
+        Button paste = button("Paste", Color.rgb(24, 45, 58), Color.WHITE);
+        Button importFile = button("Import file", Color.rgb(24, 45, 58), Color.WHITE);
+        Button clear = button("Clear custom", Color.rgb(52, 35, 42), Color.WHITE);
+        paste.setOnClickListener(v -> pasteIntoInput(input));
+        importFile.setOnClickListener(v -> importTextFile(importRequestCode));
+        clear.setOnClickListener(v -> {
+            input.setText("");
+            renderScanPlanPreviews();
+        });
+        actions.addView(paste, weight());
+        actions.addView(importFile, weight());
+        if (includeBest) {
+            Button addBest = button("Add best IP", Color.rgb(18, 55, 50), Color.WHITE);
+            addBest.setOnClickListener(v -> addBestResultIp(input));
+            actions.addView(addBest, weight());
+        }
+        actions.addView(clear, weight());
+        return actions;
+    }
+
+    private void pasteIntoInput(EditText input) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        ClipData data = clipboard == null ? null : clipboard.getPrimaryClip();
+        if (data == null || data.getItemCount() == 0) {
+            toast("Clipboard is empty");
+            return;
+        }
+        CharSequence text = data.getItemAt(0).coerceToText(this);
+        if (text == null || text.toString().trim().isEmpty()) {
+            toast("Clipboard has no text");
+            return;
+        }
+        appendToInput(input, text.toString());
+        renderScanPlanPreviews();
+        toast("Pasted custom IP entries");
+    }
+
+    private void importTextFile(int requestCode) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/*");
+        startActivityForResult(intent, requestCode);
+    }
+
+    private String readTextFromUri(Uri uri, int maxBytes) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(maxBytes, 8192));
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) throw new IOException("file could not be opened");
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) != -1 && out.size() < maxBytes) {
+                out.write(buffer, 0, Math.min(read, maxBytes - out.size()));
+            }
+        }
+        return out.toString(StandardCharsets.UTF_8.name());
+    }
+
+    private void appendToInput(EditText input, String addition) {
+        if (input == null || addition == null) return;
+        String existing = input.getText().toString().trim();
+        String incoming = addition.trim();
+        if (incoming.isEmpty()) return;
+        input.setText(existing.isEmpty() ? incoming : existing + "\n" + incoming);
+        input.setSelection(input.getText().length());
+    }
+
+    private void addBestResultIp(EditText input) {
+        Result best = bestVisibleResult(resultStore.snapshot());
+        if (best == null || best.ip == null || best.ip.trim().isEmpty()) {
+            toast("No best IP yet");
+            return;
+        }
+        appendUniqueLine(input, best.ip.trim());
+        renderScanPlanPreviews();
+        toast("Best IP added to custom list");
+    }
+
+    private void appendUniqueLine(EditText input, String value) {
+        LinkedHashSet<String> lines = new LinkedHashSet<>(lines(input == null ? "" : input.getText().toString()));
+        lines.add(value);
+        input.setText(String.join("\n", lines));
+        input.setSelection(input.getText().length());
     }
 
     private void clearManagedSources() {
@@ -1187,6 +1277,7 @@ public class MainActivity extends Activity {
         
         final String rawTargetsText = targetsInput.getText().toString();
         final String rawSnisText = snisInput.getText().toString();
+        final String targetStatsText = customTargetStatsText(rawTargetsText);
         final int targetCap = Math.max(1, intValue(totalInput, 72000));
         
         final boolean community = checked(communitySourceEnabled);
@@ -1231,12 +1322,13 @@ public class MainActivity extends Activity {
                     customSize = sampleSource(lines(rawTargetsText), customTargetSampleInput == null ? 0 : intValue(customTargetSampleInput, 0)).size();
                 }
                 
-                renderChips(targetChipPreview, "IP preview (" + managedSize + " managed IP entries + " + customSize + " typed -> " + Math.min(estimatedTargets, targetCap) + " IPs, " + previewTargets.size() + " shown)", previewTargets, true);
+                renderChips(targetChipPreview, "IP preview (" + countLabel(Math.min(estimatedTargets, targetCap)) + " IPs planned, " + previewTargets.size() + " shown)", previewTargets, true);
                 renderChips(sniChipPreview, "MaybeScanner IP-only mode", Collections.emptyList(), false);
                 
                 if (sourceSummaryView != null) sourceSummaryView.setText(summaryText);
                 if (sourceHealthView != null) sourceHealthView.setText(healthText);
                 if (scanPlanView != null) scanPlanView.setText(planText);
+                if (targetInputStatsView != null) targetInputStatsView.setText(targetStatsText);
             });
         });
     }
@@ -1351,7 +1443,7 @@ public class MainActivity extends Activity {
 
         return "Managed IP sources\n" +
                 (enabled.isEmpty() ? "No IP source enabled" : joinComma(enabled)) + "\n" +
-                targetSize + " source IP entries -> about " + estimated + " expanded IPs before the IP scan limit. Typed IPs use their own limit.";
+                targetSize + " source rows -> about " + estimated + " IPs before the IP scan limit. Custom IPs are counted separately.";
     }
 
     private String getHealthText(
@@ -1369,7 +1461,7 @@ public class MainActivity extends Activity {
 
         String composition = targetTokens.isEmpty()
                 ? "No IP sources selected yet."
-                : managedTargets + " managed IP entries + " + customTargets + " typed IP entries, deduped before expansion.";
+                : managedTargets + " managed source rows + " + customTargets + " custom rows, deduped before IP expansion.";
 
         String routeScope = "IP-only scope; SNI/host names are extracted from TLS and HTTP results, not paired as scan input.";
 
@@ -1408,8 +1500,8 @@ public class MainActivity extends Activity {
         if (!path.startsWith("/")) path = "/" + path;
 
         return "IP scan plan\n" +
-                managedTargets + " managed IP entries + " + lines(rawTargetsText).size() + " typed IP entries -> " + estimatedTargets + " expanded IPs -> " + cappedTargets + " scanned by IP scan limit " + targetCap + "\n" +
-                (sniPairingEnabled() ? sniCount + " SNI host" + (sniCount == 1 ? "" : "s") + " kept separate for TLS/Host routing; " : "IP-only TLS/HTTP probing; ") + "ports " + ports + "\n" +
+                managedTargets + " managed source rows + " + lines(rawTargetsText).size() + " custom rows -> " + estimatedTargets + " IPs available -> " + cappedTargets + " IPs selected by scan limit " + targetCap + "\n" +
+                (sniPairingEnabled() ? sniCount + " SNI host" + (sniCount == 1 ? "" : "s") + " kept separate for TLS/Host routing; " : "IP-only TLS/HTTP checks; ") + "ports " + ports + "\n" +
                 "Runtime: batch " + batch + ", threads " + threads + ", timeout " + timeout + "ms, HTTP path " + path + "\n" +
                 "TLS ClientHello mode: " + tlsMode + "\n" +
                 workflowLabels(profiles) + " -> " + (profiles.isEmpty() ? "select at least one manual step." : "about " + units + " connection checks. Preset overlaps are deduped, not overridden.");
@@ -1471,6 +1563,63 @@ public class MainActivity extends Activity {
         } else {
             state.emptyChip.setVisibility(View.GONE);
         }
+    }
+
+    private static String customTargetStatsText(String raw) {
+        InputStats stats = analyzeInput(raw, true);
+        if (stats.items == 0) return "Custom IPs: none";
+        StringBuilder sb = new StringBuilder();
+        sb.append("Custom IPs: ").append(stats.items).append(" items, ")
+                .append(stats.valid).append(" valid, ")
+                .append(stats.invalid).append(" invalid, ")
+                .append(stats.duplicates).append(" duplicates, about ")
+                .append(countLabel(stats.estimatedIps)).append(" IPs");
+        if (stats.cidrs > 0 || stats.ranges > 0 || stats.hostnames > 0) {
+            sb.append(" (").append(stats.cidrs).append(" CIDR, ")
+                    .append(stats.ranges).append(" ranges, ")
+                    .append(stats.hostnames).append(" hostnames)");
+        }
+        if (!stats.preview.isEmpty()) {
+            sb.append(stats.items <= 8 && stats.invalid == 0 ? ". Values: " : ". Preview: ");
+            sb.append(joinComma(stats.preview));
+        }
+        return sb.toString();
+    }
+
+    private static InputStats analyzeInput(String raw, boolean targets) {
+        InputStats stats = new InputStats();
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        for (String line : raw == null ? Collections.<String>emptyList() : Arrays.asList(raw.split("\\r?\\n"))) {
+            if (!line.trim().isEmpty()) stats.lines++;
+            for (String part : line.split("[,;\\s]+")) {
+                String clean = targets ? cleanToken(part) : part.trim().toLowerCase(Locale.US);
+                if (clean.isEmpty()) continue;
+                stats.items++;
+                boolean valid = targets ? validTargetToken(clean) : validDomainToken(clean);
+                if (!seen.add(clean)) stats.duplicates++;
+                if (!valid) {
+                    stats.invalid++;
+                    continue;
+                }
+                stats.valid++;
+                if (targets) {
+                    int estimated = estimateExpandedTargetCount(Collections.singletonList(clean), Integer.MAX_VALUE);
+                    stats.estimatedIps += Math.max(1, estimated);
+                    if (clean.contains("/") && estimateCidrCount(clean, Integer.MAX_VALUE) > 0) stats.cidrs++;
+                    else if (clean.contains("-") && estimateRangeCount(clean, Integer.MAX_VALUE) > 0) stats.ranges++;
+                    else if (isIp(clean)) stats.ips++;
+                    else stats.hostnames++;
+                }
+                if (stats.preview.size() < 12 && !stats.preview.contains(clean)) stats.preview.add(clean);
+            }
+        }
+        return stats;
+    }
+
+    private static class InputStats {
+        int lines, items, valid, invalid, duplicates, ips, cidrs, ranges, hostnames;
+        long estimatedIps;
+        final ArrayList<String> preview = new ArrayList<>();
     }
 
     private PreviewPanelState previewPanelState(LinearLayout panel) {
@@ -1752,19 +1901,37 @@ public class MainActivity extends Activity {
     }
 
     private LinkedHashSet<String> sampleSource(Collection<String> values, int count) {
-        ArrayList<String> list = new ArrayList<>(values);
+        ArrayList<String> list = new ArrayList<>();
+        for (String value : values) {
+            String clean = cleanToken(value);
+            if (!clean.isEmpty()) list.add(clean);
+        }
         LinkedHashSet<String> out = new LinkedHashSet<>();
         if (count <= 0) {
             out.addAll(list);
             return out;
         }
         if (list.isEmpty()) return out;
-        int sampleCount = Math.min(count, list.size());
+        long totalEstimate = 0;
+        long[] starts = new long[list.size()];
+        for (int i = 0; i < list.size(); i++) {
+            starts[i] = totalEstimate;
+            totalEstimate += Math.max(1, estimateExpandedTargetCount(Collections.singletonList(list.get(i)), Integer.MAX_VALUE));
+            if (totalEstimate > Integer.MAX_VALUE) totalEstimate = Integer.MAX_VALUE;
+        }
+        int sampleCount = (int) Math.min(count, totalEstimate);
         for (int i = 0; i < sampleCount; i++) {
-            String token = list.get((int) Math.floor(i * (list.size() / (double) sampleCount)));
-            out.add(sampleOneExpandedTarget(token, i));
+            long position = (long) Math.floor(i * (totalEstimate / (double) sampleCount));
+            int tokenIndex = tokenIndexForPosition(starts, position);
+            out.add(sampleOneExpandedTarget(list.get(tokenIndex), (int) Math.max(0, position - starts[tokenIndex])));
         }
         return out;
+    }
+
+    private static int tokenIndexForPosition(long[] starts, long position) {
+        int index = Arrays.binarySearch(starts, position);
+        if (index >= 0) return index;
+        return Math.max(0, Math.min(starts.length - 1, -index - 2));
     }
 
     private static String sampleOneExpandedTarget(String token, int index) {
@@ -3472,7 +3639,7 @@ public class MainActivity extends Activity {
             sb.append("Timestamp: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date())).append("\n\n");
             sb.append("[0] Diagnostic mode:\n");
             sb.append(" - Offline mode: ").append(offlineMode ? "ON" : "OFF").append('\n');
-            sb.append(" - Public IP probe: ").append(includePublicIp ? "ON" : "OFF").append('\n');
+            sb.append(" - Public IP lookup: ").append(includePublicIp ? "ON" : "OFF").append('\n');
             sb.append('\n');
 
             // 1. VPN / Proxy Check
@@ -3501,7 +3668,7 @@ public class MainActivity extends Activity {
             sb.append("\n");
 
             if (offlineMode) {
-                sb.append("[2] DNS/TCP/HTTPS probes:\n");
+                sb.append("[2] DNS/TCP/HTTPS checks:\n");
                 sb.append(" - Skipped in offline diagnostics mode\n\n");
             } else {
                 // 2. DNS latency test
@@ -3568,14 +3735,14 @@ public class MainActivity extends Activity {
                 }
                 sb.append("\n");
                 if (includePublicIp) {
-                    sb.append("[5] Public IP probe:\n");
+                    sb.append("[5] Public IP lookup:\n");
                     String publicIpURL = "https://api.ipify.org?format=json";
                     try {
                         JSONObject publicIp = fetchJson(publicIpURL, 2500);
                         sb.append(" - api.ipify.org response: ").append(publicIp.optString("ip", "unknown")).append('\n');
                         externalServices.add(publicIpURL);
                     } catch (Exception e) {
-                        sb.append(" - Public IP probe failed: ").append(e.getMessage()).append('\n');
+                        sb.append(" - Public IP lookup failed: ").append(e.getMessage()).append('\n');
                     }
                     sb.append('\n');
                 }
@@ -3666,13 +3833,56 @@ public class MainActivity extends Activity {
     private void rebuildStableLogBuilder() { stableLogBuilder.setLength(0); for (String x : logLines) stableLogBuilder.append(x).append('\n'); }
     private int intValue(EditText e, int defaultValue) { try { String s = e.getText().toString().trim(); return s.isEmpty() ? defaultValue : Integer.parseInt(s); } catch (Exception ex) { return defaultValue; } }
     private static int clampInt(int value, int min, int max) { return Math.max(min, Math.min(max, value)); }
-    private LinearLayout column() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
-    private LinearLayout row() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER); return l; }
-    @SuppressLint("WrongConstant")
-    private TextView text(String s, int sp, int color, boolean bold) { TextView v = new TextView(this); v.setText(s); v.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp); v.setTextColor(color); if (bold) v.setTypeface(Typeface.DEFAULT_BOLD); v.setPadding(0, dp(4), 0, dp(4)); v.setLetterSpacing(0.02f); v.setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY); return v; }
+    private LinearLayout column() { return ScannerUiKit.column(this); }
+    private LinearLayout row() { return ScannerUiKit.row(this); }
+    private TextView text(String s, int sp, int color, boolean bold) { return ScannerUiKit.text(this, s, sp, color, bold); }
     private TextView panelText(String s) { TextView v = text(s, 12, Color.WHITE, false); v.setBackground(glassBg(PANEL, Color.argb(95, 255, 255, 255))); v.setPadding(dp(10), dp(8), dp(10), dp(8)); setOuterMargin(v, 0, dp(5), 0, dp(5)); return v; }
     private TextView glassText(String s) { TextView v = panelText(s); v.setTextColor(Color.rgb(196, 223, 235)); return v; }
     private TextView quietNote(String body) { TextView v = text(body, 11, Color.rgb(185, 210, 222), false); v.setBackground(glassBg(Color.rgb(8, 20, 29), Color.argb(45, 255, 255, 255))); v.setPadding(dp(9), dp(6), dp(9), dp(6)); setOuterMargin(v, 0, dp(4), 0, dp(6)); return v; }
+
+    private LinearLayout compactResultViewControls() {
+        LinearLayout group = column();
+        group.setBackground(glassBg(Color.rgb(10, 24, 34), Color.argb(50, 255, 255, 255)));
+        group.setPadding(dp(7), dp(5), dp(7), dp(7));
+        setOuterMargin(group, 0, dp(4), 0, dp(4));
+        group.addView(text("Display", 11, MUTED, true));
+        group.addView(compactSegmentRow("View", new String[]{"Cards", "Heatmap"}, visualizationButtons, visualizationMode, index -> {
+            visualizationMode = index;
+            if (resultsAdapter != null) resultsAdapter.notifyDataSetChanged();
+            scheduleRender();
+        }));
+        group.addView(compactSegmentRow("Cards", new String[]{"Comfort", "High contrast", "Compact"}, densityButtons, densityMode, index -> {
+            densityMode = index;
+            if (resultsAdapter != null) resultsAdapter.notifyDataSetChanged();
+            scheduleRender();
+        }));
+        return group;
+    }
+
+    private LinearLayout compactSegmentRow(String label, String[] names, ArrayList<Button> buttons, int selectedIndex, SegmentHandler afterChange) {
+        LinearLayout line = row();
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        TextView labelView = text(label, 10, Color.rgb(170, 194, 208), true);
+        labelView.setGravity(Gravity.CENTER_VERTICAL);
+        line.addView(labelView, fixedWidth(64));
+        buttons.clear();
+        for (int i = 0; i < names.length; i++) {
+            final int index = i;
+            Button b = button(names[i], Color.rgb(20, 40, 52), Color.WHITE);
+            b.setMinHeight(dp(34));
+            b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+            b.setContentDescription(label + ": " + names[i]);
+            b.setOnClickListener(v -> {
+                if (afterChange != null) afterChange.onSelect(index);
+                refreshSegmentButtons(buttons, index);
+            });
+            buttons.add(b);
+            line.addView(b, weight());
+        }
+        refreshSegmentButtons(buttons, selectedIndex);
+        return line;
+    }
+
     private LinearLayout segmentedChoice(String label, String[] names, ArrayList<Button> buttons, int selectedIndex, SegmentHandler afterChange) {
         LinearLayout group = column();
         group.setBackground(glassBg(Color.rgb(10, 24, 34), Color.argb(60, 255, 255, 255)));
@@ -3769,7 +3979,7 @@ public class MainActivity extends Activity {
         card.setPadding(dp(12), dp(10), dp(12), dp(10));
         setOuterMargin(card, 0, dp(8), 0, dp(8));
         card.addView(text("Privileged radio tools", 12, Color.rgb(210, 231, 240), true));
-        card.addView(text("Radio mode changes need Shizuku, Sui, root, or a local ADB bridge that is already running. Use this panel in order: check readiness, grant access, probe the bridge, read current values, then make confirmed writes only when the readback looks sane.", 11, MUTED, false));
+        card.addView(text("Radio mode changes need Shizuku, Sui, root, or a local ADB bridge that is already running. Use this panel in order: check readiness, grant access, check the bridge, read current values, then make confirmed writes only when the readback looks sane.", 11, MUTED, false));
 
         shizukuStatusView = panelText("Shizuku: checking");
         card.addView(shizukuStatusView);
@@ -3786,9 +3996,9 @@ public class MainActivity extends Activity {
         card.addView(statusRow);
 
         LinearLayout probeRow = row();
-        Button probe = button("Probe bridge", Color.rgb(24, 45, 58), Color.WHITE);
+        Button probe = button("Check bridge", Color.rgb(24, 45, 58), Color.WHITE);
         Button read = button("Read radio", Color.rgb(24, 45, 58), Color.WHITE);
-        probe.setOnClickListener(v -> runShizukuRadioCommand("Bridge capability probe", buildBridgeProbeCommand(), false));
+        probe.setOnClickListener(v -> runShizukuRadioCommand("Bridge capability check", buildBridgeProbeCommand(), false));
         read.setOnClickListener(v -> runShizukuRadioCommand("Read radio modes", buildReadModesCommand(), false));
         probeRow.addView(probe, weight());
         probeRow.addView(read, weight());
@@ -3848,7 +4058,7 @@ public class MainActivity extends Activity {
         custom.addView(applyCustom);
         card.addView(collapsibleBox("Advanced radio key", custom, false));
 
-        shizukuOutputView = panelText("No privileged action has run. Probe the bridge first, then read current radio values before any write.");
+        shizukuOutputView = panelText("No privileged action has run. Check the bridge first, then read current radio values before any write.");
         formatMonospace(shizukuOutputView, 11);
         shizukuOutputView.setTextIsSelectable(true);
         card.addView(shizukuOutputView);
@@ -3942,7 +4152,7 @@ public class MainActivity extends Activity {
         ui.post(() -> {
             refreshShizukuState();
             if (shizukuOutputView != null && shizukuOutputView.getText().toString().startsWith("Privileged service disconnected")) {
-                setShizukuOutput("Privileged service connected. Probe the bridge before writing radio settings.");
+                setShizukuOutput("Privileged service connected. Check the bridge before writing radio settings.");
             }
         });
     }
@@ -3961,7 +4171,7 @@ public class MainActivity extends Activity {
         ui.post(() -> {
             refreshShizukuState();
             setShizukuOutput(grantResult == PackageManager.PERMISSION_GRANTED
-                    ? "Shizuku access granted. Probe the bridge next, then read current radio values."
+                    ? "Shizuku access granted. Check the bridge next, then read current radio values."
                     : "Shizuku access denied. Open Shizuku, allow this app under authorized apps, then tap Check Shizuku.");
             toast(grantResult == PackageManager.PERMISSION_GRANTED ? "Shizuku access granted" : "Shizuku access denied");
         });
@@ -4020,8 +4230,8 @@ public class MainActivity extends Activity {
         sb.append("\nRadio writes: confirmed action with readback");
         shizukuStatusView.setText(sb.toString());
         setShizukuNextStep(granted
-                ? "Next: probe the bridge, then read current radio values. Use writes only after readback looks sane for this device and SIM."
-                : "Next: tap Grant access, approve this app in Shizuku, then probe the bridge.");
+                ? "Next: check the bridge, then read current radio values. Use writes only after readback looks sane for this device and SIM."
+                : "Next: tap Grant access, approve this app in Shizuku, then check the bridge.");
         updateShizukuHealthTile();
     }
 
@@ -4034,7 +4244,7 @@ public class MainActivity extends Activity {
         if (!alive) {
             return "Bridge: offline | Permission: not available | Backend: none\n"
                     + shizukuSetupPathLine() + "\n"
-                    + "Last probe: " + shizukuLastProbeLine();
+                    + "Last check: " + shizukuLastProbeLine();
         }
         boolean preV11 = false;
         boolean granted = false;
@@ -4047,7 +4257,7 @@ public class MainActivity extends Activity {
         String backend = uid == 0 ? "root UID 0" : (uid == 2000 ? "ADB shell UID 2000" : "UID " + (uid < 0 ? "unknown" : uid));
         String permission = preV11 ? "unsupported server" : (granted ? "granted" : "needed");
         return "Bridge: online | Permission: " + permission + " | Backend: " + backend + "\n"
-                + "Server: " + version + " | Last probe: " + shizukuLastProbeLine() + "\n"
+                + "Server: " + version + " | Last check: " + shizukuLastProbeLine() + "\n"
                 + shizukuSetupPathLine()
                 + (basebandManager == null ? "" : "\n\n" + basebandManager.capabilityReport().toDisplayText());
     }
@@ -4085,7 +4295,7 @@ public class MainActivity extends Activity {
     private String shizukuCapabilityHint(int uid) {
         if (uid == 0) return "Capability: root can reach more system APIs; commands still require confirmation here.";
         if (uid == 2000) return "Capability: ADB shell can use many system permissions, but OEM and Android-version limits still apply.";
-        return "Capability: backend permissions vary; probe the bridge before any write.";
+        return "Capability: backend permissions vary; check the bridge before any write.";
     }
 
     private void requestShizukuPermission() {
@@ -4097,7 +4307,7 @@ public class MainActivity extends Activity {
         }
         if (shizukuPermissionGranted()) {
             refreshShizukuState();
-            setShizukuOutput("Shizuku is already allowed. Probe the bridge next, then read current radio values.");
+            setShizukuOutput("Shizuku is already allowed. Check the bridge next, then read current radio values.");
             toast("Shizuku is already allowed");
             return;
         }
@@ -4530,25 +4740,17 @@ public class MainActivity extends Activity {
         card.addView(actions);
         return card;
     }
-    private TextView section(String s) { TextView v = text(s, 12, Color.rgb(180, 215, 230), true); v.setPadding(dp(2), dp(10), 0, dp(4)); v.setLetterSpacing(0f); return v; }
+    private TextView section(String s) { return ScannerUiKit.section(this, s, Color.rgb(180, 215, 230)); }
     private TextView pill(String s) { TextView v = text(s, 13, BLUE, true); v.setGravity(Gravity.CENTER); v.setBackground(glassBg(Color.rgb(16, 35, 50), BLUE)); v.setPadding(dp(12), dp(8), dp(12), dp(8)); setOuterMargin(v, 0, dp(8), 0, dp(8)); return v; }
     private EditText area(String hint) { EditText e = input("", false); e.setHint(hint); e.setMinLines(3); e.setMaxLines(7); e.setGravity(Gravity.TOP); return e; }
-    private EditText input(String s, boolean number) { EditText e = new EditText(this); e.setText(s); e.setTextColor(Color.WHITE); e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); e.setHintTextColor(Color.rgb(145, 174, 190)); e.setSingleLine(false); e.setMaxLines(number ? 1 : 4); e.setHorizontallyScrolling(false); int type = number ? InputType.TYPE_CLASS_NUMBER : (InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE); e.setInputType(type | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); e.setBackground(glassBg(FIELD, Color.argb(85, 255, 255, 255))); e.setPadding(dp(10), dp(8), dp(10), dp(8)); return e; }
-    private CheckBox check(String s) { CheckBox c = new CheckBox(this); c.setText(s); c.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); c.setTextColor(Color.WHITE); c.setMinHeight(dp(40)); c.setContentDescription(s); c.setButtonTintList(android.content.res.ColorStateList.valueOf(BLUE)); return c; }
-    private Button button(String s, int bg, int fg) { Button b = new Button(this); b.setText(s); b.setTextColor(fg); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); b.setMinHeight(dp(42)); b.setAllCaps(false); b.setContentDescription(s.replace('\n', ' ')); b.setTypeface(Typeface.DEFAULT_BOLD); b.setBackground(glassBg(bg, Color.argb(125, 255, 255, 255))); b.setPadding(dp(9), dp(7), dp(9), dp(7)); b.setOnTouchListener((v, e) -> { if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) { v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP); v.animate().scaleX(0.98f).scaleY(0.98f).setDuration(70).start(); } if (e.getAction() == android.view.MotionEvent.ACTION_UP || e.getAction() == android.view.MotionEvent.ACTION_CANCEL) v.animate().scaleX(1f).scaleY(1f).setDuration(130).setInterpolator(new DecelerateInterpolator()).start(); return false; }); return b; }
-    private Spinner spinner(String[] values) {
-        Spinner s = new Spinner(this);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, values);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        s.setAdapter(adapter);
-        s.setBackground(glassBg(FIELD, Color.argb(85, 255, 255, 255)));
-        s.setPadding(dp(8), dp(5), dp(8), dp(5));
-        return s;
-    }
-    private LinearLayout box(String label, View child) { LinearLayout l = column(); l.setBackground(glassBg(Color.rgb(10, 24, 34), Color.argb(60, 255, 255, 255))); l.setPadding(dp(7), dp(2), dp(7), dp(7)); l.addView(section(label)); l.addView(child); return l; }
-    private LinearLayout.LayoutParams weight() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1); lp.setMargins(dp(4), dp(4), dp(4), dp(4)); return lp; }
-    private LinearLayout.LayoutParams fixedWidth(int widthDp) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(widthDp), -2); lp.setMargins(dp(3), dp(3), dp(3), dp(3)); return lp; }
-    private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
+    private EditText input(String s, boolean number) { return ScannerUiKit.input(this, s, number, FIELD, Color.argb(85, 255, 255, 255)); }
+    private CheckBox check(String s) { return ScannerUiKit.check(this, s, BLUE); }
+    private Button button(String s, int bg, int fg) { return ScannerUiKit.button(this, s, bg, fg, Color.argb(125, 255, 255, 255)); }
+    private Spinner spinner(String[] values) { return ScannerUiKit.spinner(this, values, FIELD, Color.argb(85, 255, 255, 255)); }
+    private LinearLayout box(String label, View child) { return ScannerUiKit.box(this, label, child, Color.rgb(10, 24, 34), Color.argb(60, 255, 255, 255), Color.rgb(180, 215, 230)); }
+    private LinearLayout.LayoutParams weight() { return ScannerUiKit.weight(this); }
+    private LinearLayout.LayoutParams fixedWidth(int widthDp) { return ScannerUiKit.fixedWidth(this, widthDp); }
+    private int dp(int v) { return ScannerUiKit.dp(this, v); }
     private void toast(String s) {
         if (s == null || s.trim().isEmpty()) return;
         String msg = s.trim();
@@ -4597,13 +4799,9 @@ public class MainActivity extends Activity {
     private GradientDrawable glassBg(int fill, int stroke) {
         int fillAlpha = highContrastMode() ? 245 : 232;
         int shineAlpha = highContrastMode() ? 28 : 48;
-        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{Color.argb(fillAlpha, Color.red(fill), Color.green(fill), Color.blue(fill)), Color.argb(shineAlpha, 255, 255, 255)});
-        g.setCornerRadius(dp(compactMode() ? 7 : 10));
-        g.setStroke(highContrastMode() ? dp(2) : 1, stroke);
-        return g;
+        return ScannerUiKit.glassBg(this, fill, stroke, highContrastMode(), compactMode());
     }
-    private void setOuterMargin(View v, int l, int t, int r, int b) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.setMargins(l, t, r, b); v.setLayoutParams(lp); }
+    private void setOuterMargin(View v, int l, int t, int r, int b) { ScannerUiKit.setOuterMargin(v, l, t, r, b); }
 
     private class ResultsAdapter extends RecyclerView.Adapter<ResultsAdapter.ViewHolder> {
         private final List<Result> mItems = new ArrayList<>();
