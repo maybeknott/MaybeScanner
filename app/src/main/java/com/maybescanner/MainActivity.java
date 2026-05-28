@@ -1000,35 +1000,43 @@ public class MainActivity extends Activity {
     }
 
     private int communitySourceTotal() {
-        return loadAsset("default_targets.txt").size() +
-                loadAsset("default_edges_extra.txt").size() +
-                communityEdgeCorpus("scan-corpora/community-edge-ips.txt", "scan-corpora/community-edge-cidrs-24.txt").size();
+        return SourceCatalog.communityTotal(sourceCatalogLoader());
     }
 
     private int akamaiSourceTotal() {
-        return loadAssetTokens("scan-corpora/akamai-AS20940.json").size() +
-                loadAsset("scan-corpora/akamai-hosts-184x.txt").size();
+        return SourceCatalog.akamaiTotal(sourceCatalogLoader());
     }
 
     private int cloudfrontSourceTotal() {
-        return loadAssetTokens("scan-corpora/aws-cloudfront-ranges.txt").size();
+        return SourceCatalog.cloudfrontTotal(sourceCatalogLoader());
     }
 
     private int fastlySourceTotal() {
-        return loadAssetTokens("scan-corpora/fastly-AS54113.json").size();
+        return SourceCatalog.fastlyTotal(sourceCatalogLoader());
     }
 
     private int cloudflareSourceTotal() {
-        return loadAssetTokens("scan-corpora/cloudflare-ranges.txt").size();
+        return SourceCatalog.cloudflareTotal(sourceCatalogLoader());
     }
 
     private int otherCdnSourceTotal() {
-        return loadAssetTokens("scan-corpora/github-pages-ranges.txt").size() +
-                loadAssetTokens("scan-corpora/azure-frontdoor-ranges.txt").size() +
-                loadAssetTokens("scan-corpora/google-cdn-ranges.txt").size() +
-                loadAssetTokens("scan-corpora/bunny-ranges.txt").size() +
-                loadAssetTokens("scan-corpora/stackpath-edgio-ranges.txt").size() +
-                loadAssetTokens("scan-corpora/other-cloud-ranges.txt").size();
+        return SourceCatalog.otherCdnTotal(sourceCatalogLoader());
+    }
+
+    private SourceCatalog.Loader sourceCatalogLoader() {
+        return new SourceCatalog.Loader() {
+            @Override public List<String> lines(String asset) {
+                return loadAsset(asset);
+            }
+
+            @Override public Set<String> tokens(String asset) {
+                return loadAssetTokens(asset);
+            }
+
+            @Override public Set<String> communityEdges(String ipAsset, String cidrAsset) {
+                return communityEdgeCorpus(ipAsset, cidrAsset);
+            }
+        };
     }
 
     private static String countLabel(int count) {
@@ -1287,40 +1295,40 @@ public class MainActivity extends Activity {
         }
         if (community) {
             synchronized (selectedSourceTargets) {
-                selectedSourceTargets.addAll(sampleSource(loadAsset("default_targets.txt"), communityCount));
-                selectedSourceTargets.addAll(sampleSource(loadAsset("default_edges_extra.txt"), communityCount));
-                selectedSourceTargets.addAll(sampleSource(communityEdgeCorpus("scan-corpora/community-edge-ips.txt", "scan-corpora/community-edge-cidrs-24.txt"), communityCount));
+                selectedSourceTargets.addAll(sampleSource(loadAsset(SourceCatalog.DEFAULT_TARGETS), communityCount));
+                selectedSourceTargets.addAll(sampleSource(loadAsset(SourceCatalog.DEFAULT_EDGES_EXTRA), communityCount));
+                selectedSourceTargets.addAll(sampleSource(communityEdgeCorpus(SourceCatalog.COMMUNITY_EDGE_IPS, SourceCatalog.COMMUNITY_EDGE_CIDRS_24), communityCount));
             }
         }
         if (akamai) {
             synchronized (selectedSourceTargets) {
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/akamai-AS20940.json"), akamaiCount));
-                selectedSourceTargets.addAll(sampleSource(loadAsset("scan-corpora/akamai-hosts-184x.txt"), akamaiCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.AKAMAI_AS20940), akamaiCount));
+                selectedSourceTargets.addAll(sampleSource(loadAsset(SourceCatalog.AKAMAI_HOSTS_184X), akamaiCount));
             }
         }
         if (cloudfront) {
             synchronized (selectedSourceTargets) {
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/aws-cloudfront-ranges.txt"), cloudfrontCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.AWS_CLOUDFRONT_RANGES), cloudfrontCount));
             }
         }
         if (fastly) {
             synchronized (selectedSourceTargets) {
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/fastly-AS54113.json"), fastlyCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.FASTLY_AS54113), fastlyCount));
             }
         }
         if (cloudflare) {
             synchronized (selectedSourceTargets) {
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/cloudflare-ranges.txt"), cloudflareCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.CLOUDFLARE_RANGES), cloudflareCount));
             }
         }
         if (otherCdn) {
             synchronized (selectedSourceTargets) {
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/github-pages-ranges.txt"), otherCdnCount));
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/azure-frontdoor-ranges.txt"), otherCdnCount));
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/google-cdn-ranges.txt"), otherCdnCount));
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/bunny-ranges.txt"), otherCdnCount));
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/stackpath-edgio-ranges.txt"), otherCdnCount));
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/other-cloud-ranges.txt"), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.GITHUB_PAGES_RANGES), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.AZURE_FRONTDOOR_RANGES), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.GOOGLE_CDN_RANGES), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.BUNNY_RANGES), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.STACKPATH_EDGIO_RANGES), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.OTHER_CLOUD_RANGES), otherCdnCount));
             }
         }
     }
@@ -1702,20 +1710,20 @@ public class MainActivity extends Activity {
     }
 
     private void warmSourceCaches() {
-        loadAsset("default_targets.txt");
-        loadAsset("default_edges_extra.txt");
-        communityEdgeCorpus("scan-corpora/community-edge-ips.txt", "scan-corpora/community-edge-cidrs-24.txt");
-        loadAssetTokens("scan-corpora/akamai-AS20940.json");
-        loadAsset("scan-corpora/akamai-hosts-184x.txt");
-        loadAssetTokens("scan-corpora/aws-cloudfront-ranges.txt");
-        loadAssetTokens("scan-corpora/fastly-AS54113.json");
-        loadAssetTokens("scan-corpora/cloudflare-ranges.txt");
-        loadAssetTokens("scan-corpora/github-pages-ranges.txt");
-        loadAssetTokens("scan-corpora/azure-frontdoor-ranges.txt");
-        loadAssetTokens("scan-corpora/google-cdn-ranges.txt");
-        loadAssetTokens("scan-corpora/bunny-ranges.txt");
-        loadAssetTokens("scan-corpora/stackpath-edgio-ranges.txt");
-        loadAssetTokens("scan-corpora/other-cloud-ranges.txt");
+        loadAsset(SourceCatalog.DEFAULT_TARGETS);
+        loadAsset(SourceCatalog.DEFAULT_EDGES_EXTRA);
+        communityEdgeCorpus(SourceCatalog.COMMUNITY_EDGE_IPS, SourceCatalog.COMMUNITY_EDGE_CIDRS_24);
+        loadAssetTokens(SourceCatalog.AKAMAI_AS20940);
+        loadAsset(SourceCatalog.AKAMAI_HOSTS_184X);
+        loadAssetTokens(SourceCatalog.AWS_CLOUDFRONT_RANGES);
+        loadAssetTokens(SourceCatalog.FASTLY_AS54113);
+        loadAssetTokens(SourceCatalog.CLOUDFLARE_RANGES);
+        loadAssetTokens(SourceCatalog.GITHUB_PAGES_RANGES);
+        loadAssetTokens(SourceCatalog.AZURE_FRONTDOOR_RANGES);
+        loadAssetTokens(SourceCatalog.GOOGLE_CDN_RANGES);
+        loadAssetTokens(SourceCatalog.BUNNY_RANGES);
+        loadAssetTokens(SourceCatalog.STACKPATH_EDGIO_RANGES);
+        loadAssetTokens(SourceCatalog.OTHER_CLOUD_RANGES);
     }
 
     private void rebuildManagedSources() {
@@ -3213,107 +3221,20 @@ public class MainActivity extends Activity {
             return out;
         }
     }
-    private static List<String> lines(String s) { return unique(Arrays.asList(s.split("[,;\\s\\r\\n]+"))); }
-    private static List<String> unique(Collection<String> in) {
-        LinkedHashSet<String> set = new LinkedHashSet<>();
-        for (String x : in) {
-            if (x == null || x.trim().isEmpty()) continue;
-            String clean = cleanToken(x);
-            if (!clean.isEmpty()) set.add(clean);
-        }
-        return new ArrayList<>(set);
-    }
-    private static List<Integer> parsePorts(String s) {
-        LinkedHashSet<Integer> ports = new LinkedHashSet<>();
-        for (String p : String.valueOf(s == null ? "" : s).split("[,;\\s]+")) {
-            try { int v = Integer.parseInt(p.trim()); if (v > 0 && v < 65536) ports.add(v); } catch (Exception ignored) {}
-        }
-        if (ports.isEmpty()) ports.add(443);
-        return new ArrayList<>(ports);
-    }
+    private static List<String> lines(String s) { return ScanTargetPlanner.lines(s); }
+    private static List<String> unique(Collection<String> in) { return ScanTargetPlanner.unique(in); }
+    private static List<Integer> parsePorts(String s) { return ScanTargetPlanner.parsePorts(s); }
     private static List<String> cap(List<String> in, int n) { return new ArrayList<>(in.subList(0, Math.min(in.size(), Math.max(1, n)))); }
     private static String first(List<String> xs) { return xs.isEmpty() ? "" : xs.get(0); }
-    private static boolean isIpv4(String x) {
-        if (x == null) return false;
-        String v = x.trim();
-        if (!v.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return false;
-        String[] parts = v.split("\\.");
-        for (String part : parts) {
-            try { int n = Integer.parseInt(part); if (n < 0 || n > 255) return false; }
-            catch (Exception e) { return false; }
-        }
-        return true;
-    }
-    private static boolean isIp(String x) {
-        if (x == null) return false;
-        String v = x.trim();
-        if (isIpv4(v)) return true;
-        if (!v.contains(":") || !v.matches("(?i)[0-9a-f:.]+")) return false;
-        try { return InetAddress.getByName(v) instanceof Inet6Address; }
-        catch (Exception e) { return false; }
-    }
-    private static List<String> resolve(String target) {
-        try {
-            if (isIp(target)) return Collections.singletonList(target);
-            InetAddress[] a = InetAddress.getAllByName(target);
-            List<String> out = new ArrayList<>();
-            for (InetAddress x : a) if (x instanceof Inet6Address) out.add(x.getHostAddress());
-            for (InetAddress x : a) if (x instanceof Inet4Address) out.add(x.getHostAddress());
-            return unique(out);
-        } catch (Exception e) { return Collections.emptyList(); }
-    }
-    private static List<String> expandTargets(List<String> raw) {
-        return expandTargets(raw, Integer.MAX_VALUE);
-    }
+    private static boolean isIpv4(String x) { return ScanTargetPlanner.isIpv4(x); }
+    private static boolean isIp(String x) { return ScanTargetPlanner.isIp(x); }
+    private static List<String> resolve(String target) { return ScanTargetPlanner.resolve(target); }
+    private static List<String> expandTargets(List<String> raw) { return ScanTargetPlanner.expandTargets(raw); }
 
-    private static List<String> expandTargets(List<String> raw, int totalCap) {
-        LinkedHashSet<String> out = new LinkedHashSet<>();
-        int cap = Math.max(1, totalCap);
-        for (String x : raw) {
-            if (out.size() >= cap) break;
-            int remaining = cap - out.size();
-            if (x.contains("/")) out.addAll(expandCidr(x, remaining));
-            else if (x.contains("-")) out.addAll(expandRange(x, remaining));
-            else out.add(x);
-        }
-        return new ArrayList<>(out);
-    }
-    private static int estimateExpandedTargetCount(Collection<String> raw, int perTokenCap) {
-        long total = 0;
-        for (String x : raw) {
-            if (x == null || x.trim().isEmpty()) continue;
-            if (x.contains("/")) total += estimateCidrCount(x, perTokenCap);
-            else if (x.contains("-")) total += estimateRangeCount(x, perTokenCap);
-            else total++;
-            if (total > Integer.MAX_VALUE) return Integer.MAX_VALUE;
-        }
-        return (int) total;
-    }
-    private static int estimateCidrCount(String cidr, int cap) {
-        try {
-            String[] p = cidr.split("/", 2);
-            if (p.length != 2 || !isIp(p[0]) || cap <= 0) return 0;
-            int prefix = Integer.parseInt(p[1]);
-            if (p[0].contains(":")) {
-                if (prefix < 0 || prefix > 128) return 0;
-                return cap;
-            }
-            if (prefix < 0 || prefix > 32) return 0;
-            long size = 1L << (32 - prefix);
-            long usable = size > 2 ? size - 2 : size;
-            return (int) Math.min(Math.max(0, usable), cap);
-        } catch (Exception ignored) { return 0; }
-    }
-    private static int estimateRangeCount(String range, int cap) {
-        try {
-            String[] p = range.split("-", 2);
-            if (p.length != 2 || !isIpv4(p[0]) || !isIpv4(p[1]) || cap <= 0) return 0;
-            long start = ipv4ToLong(p[0]);
-            long end = ipv4ToLong(p[1]);
-            if (end < start) return 0;
-            return (int) Math.min(end - start + 1, cap);
-        } catch (Exception ignored) { return 0; }
-    }
+    private static List<String> expandTargets(List<String> raw, int totalCap) { return ScanTargetPlanner.expandTargets(raw, totalCap); }
+    private static int estimateExpandedTargetCount(Collection<String> raw, int perTokenCap) { return ScanTargetPlanner.estimateExpandedTargetCount(raw, perTokenCap); }
+    private static int estimateCidrCount(String cidr, int cap) { return ScanTargetPlanner.estimateCidrCount(cidr, cap); }
+    private static int estimateRangeCount(String range, int cap) { return ScanTargetPlanner.estimateRangeCount(range, cap); }
     private static List<String> expandRange(String range, int cap) {
         List<String> out = new ArrayList<>();
         try {
@@ -3453,7 +3374,7 @@ public class MainActivity extends Activity {
     private static String q(String s) { return "\"" + String.valueOf(s).replace("\"", "\"\"") + "\""; }
     private static String trim(String s, int n) { return s.length() <= n ? s : s.substring(0, n - 1) + "..."; }
     private static String dash(String s) { return s == null || s.isEmpty() ? "--" : s; }
-    private static String cleanToken(String s) { return s.trim().replace("\"", "").replace(",", "").replace("[", "").replace("]", ""); }
+    private static String cleanToken(String s) { return ScanTargetPlanner.cleanToken(s); }
     private String elapsed() { long s = Math.max(0, (System.currentTimeMillis() - scanStartedAt) / 1000); return s + "s"; }
     private void clip(String s) { ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("MaybeScanner", s)); }
     private String resourceLine() {
