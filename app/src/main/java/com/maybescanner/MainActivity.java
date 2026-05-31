@@ -2720,9 +2720,8 @@ public class MainActivity extends Activity {
                 h.latencySum += latency;
                 h.latencyCount++;
             }
-            String reason = r.reason == null ? "" : r.reason.toLowerCase(Locale.US);
-            if (reason.contains("timeout")) h.timeout++;
-            if (reason.contains("reset")) h.reset++;
+            if (r.phaseStatusPresent("timeout") || r.errorCodeEndsWith("_TIMEOUT")) h.timeout++;
+            if (r.phaseStatusPresent("reset") || r.errorCodeEndsWith("_RESET")) h.reset++;
         }
         ArrayList<ProviderHealth> out = new ArrayList<>(map.values());
         out.sort((a, b) -> Integer.compare(b.working, a.working));
@@ -3112,11 +3111,10 @@ public class MainActivity extends Activity {
                 if (r.tlsPass) s.tls++;
                 if (r.httpPass) s.http++;
                 if (!r.working()) s.down++;
-                String reason = r.reason.toLowerCase(Locale.US);
-                if (reason.contains("timeout")) s.timeout++;
-                if (reason.contains("reset")) s.reset++;
-                if (reason.contains("cert")) s.cert++;
-                if (reason.contains("dns")) s.dns++;
+                if (r.phaseStatusPresent("timeout") || r.errorCodeEndsWith("_TIMEOUT")) s.timeout++;
+                if (r.phaseStatusPresent("reset") || r.errorCodeEndsWith("_RESET")) s.reset++;
+                if (r.indicatesCertIssue()) s.cert++;
+                if (r.phaseNamed("dns") || (r.errorCode != null && r.errorCode.startsWith("DNS"))) s.dns++;
                 if (r.quality > s.bestQuality) { s.bestQuality = r.quality; s.best = r; }
         }
         return s;
@@ -3150,6 +3148,8 @@ public class MainActivity extends Activity {
         long tcpLatencyMs, tlsLatencyMs, httpLatencyMs;
         int httpStatus;
         String tlsVersion = "", tlsCipher = "", tlsCert = "", certFingerprint = "", alpn = "", tlsProfile = "", altSvc = "", reason = "", networkClassification = "UNKNOWN";
+        final java.util.ArrayList<PhaseResult> phaseResults = new java.util.ArrayList<>();
+        String finalPhase = "", errorCode = "";
         boolean http3Hint;
         double quality;
 
@@ -3157,14 +3157,57 @@ public class MainActivity extends Activity {
             this.target = target; this.ip = ip; this.port = port; this.sni = sni == null ? "" : sni;
         }
         static Result down(String target, String ip, int port, String sni, String reason) {
-            Result r = new Result(target, ip, port, sni); r.reason = reason; return r.finish();
+            Result r = new Result(target, ip, port, sni);
+            r.reason = reason;
+            r.recordPhase(PhaseResult.failure("dns", 0, null, "DNS_RESOLUTION_FAILED"));
+            return r.finish();
+        }
+        void recordPhase(PhaseResult phase) {
+            if (phase == null) return;
+            phaseResults.add(phase);
+            if (!"success".equals(phase.status) && !"skipped".equals(phase.status)) {
+                finalPhase = phase.phase;
+                if (phase.errorCode != null && !phase.errorCode.isEmpty()) {
+                    errorCode = phase.errorCode;
+                }
+            }
+        }
+        boolean phaseStatusPresent(String status) {
+            for (PhaseResult phase : phaseResults) {
+                if (status.equals(phase.status)) return true;
+            }
+            return false;
+        }
+        boolean phaseNamed(String phaseName) {
+            for (PhaseResult phase : phaseResults) {
+                if (phaseName.equals(phase.phase)) return true;
+            }
+            return false;
+        }
+        boolean errorCodeEndsWith(String suffix) {
+            return errorCode != null && !errorCode.isEmpty() && errorCode.endsWith(suffix);
+        }
+        boolean indicatesCertIssue() {
+            for (PhaseResult phase : phaseResults) {
+                if (phase.errorCode != null) {
+                    String upper = phase.errorCode.toUpperCase(Locale.US);
+                    if (upper.contains("TLS") || upper.contains("CERT")) return true;
+                }
+            }
+            String legacy = reason == null ? "" : reason.toLowerCase(Locale.US);
+            return legacy.contains("cert");
         }
         void tcp(int timeout) {
             long t = System.currentTimeMillis();
             try (Socket s = new Socket()) {
                 s.connect(new InetSocketAddress(ip, port), timeout);
-                tcpPass = true; tcpLatencyMs = System.currentTimeMillis() - t;
-            } catch (Exception e) { reason = classify(e); }
+                tcpPass = true;
+                tcpLatencyMs = System.currentTimeMillis() - t;
+                recordPhase(PhaseResult.success("tcp", tcpLatencyMs));
+            } catch (Exception e) {
+                reason = classify(e);
+                recordPhase(PhaseResult.failure("tcp", System.currentTimeMillis() - t, e, ""));
+            }
         }
         void tls(int timeout, int tlsMode) {
             long t = System.currentTimeMillis();
@@ -3176,12 +3219,15 @@ public class MainActivity extends Activity {
                 raw.connect(new InetSocketAddress(ip, port), timeout);
                 tcpPass = true;
                 tcpLatencyMs = System.currentTimeMillis() - connectStart;
+                recordPhase(PhaseResult.success("tcp", tcpLatencyMs));
                 raw.setSoTimeout(timeout);
                 try (SSLSocket ssl = (SSLSocket) ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(raw, host, port, true)) {
                     ssl.setSoTimeout(timeout);
                     configureTlsSocket(ssl, activeMode, false);
                     ssl.startHandshake();
-                    tlsPass = true; tlsLatencyMs = System.currentTimeMillis() - t;
+                    tlsPass = true;
+                    tlsLatencyMs = System.currentTimeMillis() - t;
+                    recordPhase(PhaseResult.success("tls", tlsLatencyMs));
                     tlsVersion = ssl.getSession().getProtocol();
                     tlsCipher = ssl.getSession().getCipherSuite();
                     alpn = selectedAlpn(ssl);
@@ -3191,8 +3237,14 @@ public class MainActivity extends Activity {
                         tlsCert = c.getSubjectX500Principal().getName();
                         certFingerprint = sha256(c.getEncoded());
                     }
+                } catch (Exception handshake) {
+                    reason = classify(handshake);
+                    recordPhase(PhaseResult.failure("tls", Math.max(0L, System.currentTimeMillis() - t), handshake, ""));
                 }
-            } catch (Exception e) { reason = classify(e); }
+            } catch (Exception e) {
+                reason = classify(e);
+                recordPhase(PhaseResult.failure("tcp", System.currentTimeMillis() - t, e, ""));
+            }
         }
         void http(int timeout, String path, int tlsMode) {
             long t = System.currentTimeMillis();
@@ -3204,6 +3256,7 @@ public class MainActivity extends Activity {
                 raw.connect(new InetSocketAddress(ip, port), timeout);
                 tcpPass = true;
                 if (tcpLatencyMs <= 0) tcpLatencyMs = System.currentTimeMillis() - connectStart;
+                recordPhase(PhaseResult.success("tcp", tcpLatencyMs));
                 raw.setSoTimeout(timeout);
                 try (SSLSocket ssl = (SSLSocket) ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(raw, host, port, true)) {
                     ssl.setSoTimeout(timeout);
@@ -3211,6 +3264,8 @@ public class MainActivity extends Activity {
                     ssl.startHandshake();
                     tlsPass = true;
                     alpn = selectedAlpn(ssl);
+                    long tlsMs = System.currentTimeMillis() - t;
+                    recordPhase(PhaseResult.success("tls", tlsMs));
                     String safePath = path == null || path.trim().isEmpty() ? "/" : path.trim();
                     if (!safePath.startsWith("/")) safePath = "/" + safePath;
                     OutputStream out = ssl.getOutputStream();
@@ -3229,10 +3284,28 @@ public class MainActivity extends Activity {
                     }
                     httpPass = httpStatus > 0 && httpStatus < 500;
                     httpLatencyMs = System.currentTimeMillis() - t;
+                    String httpPhase = PhaseResult.httpPhaseFromAlpn(alpn);
+                    if (httpPass) {
+                        recordPhase(PhaseResult.success(httpPhase, httpLatencyMs));
+                    } else {
+                        recordPhase(PhaseResult.failure(httpPhase, httpLatencyMs, null, "HTTP_PROBE_FAILED"));
+                    }
+                } catch (Exception handshake) {
+                    reason = classify(handshake);
+                    recordPhase(PhaseResult.failure("tls", Math.max(0L, System.currentTimeMillis() - t), handshake, ""));
                 }
-            } catch (Exception e) { reason = classify(e); }
+            } catch (Exception e) {
+                reason = classify(e);
+                recordPhase(PhaseResult.failure("tcp", System.currentTimeMillis() - t, e, ""));
+            }
         }
         Result finish() {
+            if (finalPhase == null || finalPhase.isEmpty()) {
+                if (httpPass) finalPhase = PhaseResult.httpPhaseFromAlpn(alpn);
+                else if (tlsPass) finalPhase = "tls";
+                else if (tcpPass) finalPhase = "tcp";
+                else if (!phaseResults.isEmpty()) finalPhase = phaseResults.get(phaseResults.size() - 1).phase;
+            }
             networkClassification = detectNetworkClassification(ip, sni, tlsCert);
             double stage = (tcpPass ? 25 : 0) + (tlsPass ? 35 : 0) + (httpPass ? 25 : 0);
             long latency = totalLatency();
@@ -3254,7 +3327,15 @@ public class MainActivity extends Activity {
             o.put("httpStatus", httpStatus); o.put("tlsVersion", tlsVersion); o.put("tlsCipher", tlsCipher);
             o.put("alpn", alpn); o.put("tlsProfile", tlsProfile); o.put("altSvc", altSvc); o.put("http3Hint", http3Hint);
             o.put("tlsCert", tlsCert); o.put("certFingerprint", certFingerprint); o.put("network_classification", networkClassification);
-            o.put("quality", quality); o.put("reason", reason); return o;
+            o.put("quality", quality); o.put("reason", reason);
+            if (!finalPhase.isEmpty()) o.put("final_phase", finalPhase);
+            if (errorCode != null && !errorCode.isEmpty()) o.put("error_code", errorCode);
+            if (!phaseResults.isEmpty()) {
+                org.json.JSONArray phases = new org.json.JSONArray();
+                for (PhaseResult phase : phaseResults) phases.put(phase.toJson());
+                o.put("phase_results", phases);
+            }
+            return o;
         }
         String csv() {
             return q(target)+","+q(ip)+","+port+","+q(sni)+","+tcpPass+","+tlsPass+","+httpPass+","+httpStatus+","+
