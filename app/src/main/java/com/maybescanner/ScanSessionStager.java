@@ -21,6 +21,7 @@ final class ScanSessionStager {
         session.stageLaunch(ScanLaunchSpec.create(
                 generation,
                 request.targets,
+                request.targetExpansion,
                 request.snis,
                 request.ports,
                 request.workflowProfiles,

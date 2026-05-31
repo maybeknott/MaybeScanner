@@ -1539,8 +1539,13 @@ public class MainActivity extends Activity {
         if (path.isEmpty()) path = "/";
         if (!path.startsWith("/")) path = "/" + path;
 
+        List<String> previewSample = previewExpandedTargets(targetTokens, Math.min(cappedTargets, PREVIEW_TARGET_LIMIT));
+        int previewPort = ports.isEmpty() ? 443 : ports.get(0);
+        int distinctPlanIds = ScanTargetPlanner.countDistinctPreviewPlans(previewSample, previewPort, sniPairingEnabled());
+
         return "IP scan plan\n" +
                 managedTargets + " optional source rows + " + lines(rawTargetsText).size() + " custom rows -> " + estimatedTargets + " targets available -> " + cappedTargets + " selected (limit " + ScanTargetPlanner.scanLimitLabel(targetCap) + ")\n" +
+                "TargetPlan preview: " + distinctPlanIds + " distinct plan_id in sample of " + previewSample.size() + "\n" +
                 "Direct IP TLS/HTTP checks; discovered certificate and HTTP names appear as result host names; ports " + ports + "\n" +
                 "Runtime: batch " + batch + ", threads " + threads + ", timeout " + timeout + "ms, HTTP path " + path + "\n" +
                 "TLS ClientHello mode: " + tlsMode + "\n" +
@@ -2121,7 +2126,14 @@ public class MainActivity extends Activity {
 
     private ScanStagingRequest buildStagingRequest() {
         rebuildManagedSources();
-        List<String> targets = expandTargets(combinedTargetTokens(), intValue(totalInput, 0));
+        int totalCap = intValue(totalInput, 0);
+        List<ScanTargetPlanner.ExpandedTarget> expanded = ScanTargetPlanner.expandTargetsDetailed(combinedTargetTokens(), totalCap);
+        ArrayList<String> targets = new ArrayList<>(expanded.size());
+        ArrayList<TargetExpansionMeta> targetExpansion = new ArrayList<>(expanded.size());
+        for (ScanTargetPlanner.ExpandedTarget entry : expanded) {
+            targets.add(entry.address);
+            targetExpansion.add(entry.expansion);
+        }
         List<String> snis = sniPairingEnabled() ? combinedSniTokens() : Collections.singletonList("");
         List<Integer> ports = parsePorts(portsInput.getText().toString());
         if (targets.isEmpty() || ports.isEmpty()) {
@@ -2149,7 +2161,7 @@ public class MainActivity extends Activity {
                 ", threads=" + threads + ", workflow=" + workflowSpinner.getSelectedItem() +
                 ", steps=" + workflowLabels(workflowProfiles);
         return new ScanStagingRequest(
-                targets, snis, ports, workflowProfiles, plannedChecks,
+                targets, targetExpansion, snis, ports, workflowProfiles, plannedChecks,
                 batch, threads, timeout, tlsMode, allSniPreference, suppressNoisyLogs,
                 sniPairingEnabled(), httpPath, workflowLabels(workflowProfiles), logSummary, true);
     }
