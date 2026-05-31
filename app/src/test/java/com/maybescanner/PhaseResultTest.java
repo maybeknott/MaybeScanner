@@ -21,4 +21,10 @@ public class PhaseResultTest {
     public void retryablePolicy() {
         assertTrue(PhaseResult.retryableFromCode("TCP_CONNECT_RESET"));
     }
+
+    @Test
+    public void displayLabelHumanizesCode() {
+        PhaseResult phase = PhaseResult.failure("tcp", 10, null, "TCP_CONNECT_TIMEOUT");
+        assertEquals("Tcp Connect Timeout", phase.displayLabel());
+    }
 }

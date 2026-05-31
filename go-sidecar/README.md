@@ -78,6 +78,13 @@ That image is cached with BuildKit `gha` and registry layers so dependency downl
 
 Empty scan requests are rejected with a structured target-selection error instead of falling back to bundled public targets.
 
+### NDJSON stream shape (scan and DNS)
+
+- `init` records include `expansion` with `submitted_tokens`, `expanded_targets`, and `safety_skipped` when CIDR/range expansion runs.
+- Each scan `result` record may include `phase_results[]`, `final_phase`, and top-level `error_code`. Phases cover DNS resolution failure, TCP connect, TLS handshake, and HTTP/1 or HTTP/2 probes (from ALPN).
+- Each DNS `result` record includes the same `phase_results` / `final_phase` fields summarizing UDP/TCP resolver attempts plus stable `error_code` values.
+- Public HTTP errors use the structured envelope documented in `public_api_errors.go` (`error_code`, `message`, `status`, `phase`, `retryable`, `request_id`, redacted `details`).
+
 Typical result fields include target, IP, port, SNI mode/name where applicable, TCP status, TLS status, HTTP status, latency, ALPN, selected TLS fingerprint, Alt-Svc and HTTP/3 hints, certificate subject/issuer/SAN values, server headers, best-effort network classification, and score.
 
 ## DNS Scan Request

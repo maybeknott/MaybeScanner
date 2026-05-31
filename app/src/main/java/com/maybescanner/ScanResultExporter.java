@@ -77,7 +77,7 @@ final class ScanResultExporter {
             writer.newLine();
             writer.write("# redaction_mode: " + meta.optString("redaction_mode"));
             writer.newLine();
-            writer.write("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,network_classification,quality,reason");
+            writer.write("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,network_classification,quality,final_phase,error_code,phase_results,reason");
             writer.newLine();
             for (MainActivity.Result row : rows) {
                 JSONObject item = exportResultJson(row, spec.redactionMode);
@@ -85,7 +85,10 @@ final class ScanResultExporter {
                         csvCell(item.optString("sni")) + "," + item.optBoolean("tcpPass") + "," + item.optBoolean("tlsPass") + "," +
                         item.optBoolean("httpPass") + "," + item.optInt("httpStatus") + "," + item.optLong("totalLatencyMs") + "," +
                         csvCell(item.optString("alpn")) + "," + csvCell(item.optString("tlsProfile")) + "," + item.optBoolean("http3Hint") + "," +
-                        csvCell(item.optString("network_classification")) + "," + item.optLong("qualityRounded") + "," + csvCell(item.optString("reason")));
+                        csvCell(item.optString("network_classification")) + "," + item.optLong("qualityRounded") + "," +
+                        csvCell(item.optString("final_phase")) + "," + csvCell(item.optString("error_code")) + "," +
+                        csvCell(item.optJSONArray("phase_results") == null ? "" : item.optJSONArray("phase_results").toString()) + "," +
+                        csvCell(item.optString("reason")));
                 writer.newLine();
             }
             return;
@@ -107,14 +110,14 @@ final class ScanResultExporter {
             writer.write("- result_count: " + meta.optInt("result_count"));
             writer.newLine();
             writer.newLine();
-            writer.write("| target | ip | sni | tcp/tls/http | network | ms |");
+            writer.write("| target | ip | sni | tcp/tls/http | network | ms | final_phase | error_code |");
             writer.newLine();
-            writer.write("| --- | --- | --- | --- | --- | --- |");
+            writer.write("| --- | --- | --- | --- | --- | --- | --- | --- |");
             writer.newLine();
             for (MainActivity.Result row : rows) {
                 JSONObject item = exportResultJson(row, spec.redactionMode);
                 String checks = (item.optBoolean("tcpPass") ? "T" : "-") + "/" + (item.optBoolean("tlsPass") ? "L" : "-") + "/" + (item.optBoolean("httpPass") ? "H" : "-");
-                writer.write("| " + safeMd(item.optString("target")) + " | " + safeMd(item.optString("ip")) + " | " + safeMd(item.optString("sni")) + " | " + checks + " | " + safeMd(item.optString("network_classification")) + " | " + item.optLong("totalLatencyMs") + " |");
+                writer.write("| " + safeMd(item.optString("target")) + " | " + safeMd(item.optString("ip")) + " | " + safeMd(item.optString("sni")) + " | " + checks + " | " + safeMd(item.optString("network_classification")) + " | " + item.optLong("totalLatencyMs") + " | " + safeMd(item.optString("final_phase")) + " | " + safeMd(item.optString("error_code")) + " |");
                 writer.newLine();
             }
             return;
