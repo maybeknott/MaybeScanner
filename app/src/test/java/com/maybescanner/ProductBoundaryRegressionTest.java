@@ -30,6 +30,8 @@ public class ProductBoundaryRegressionTest {
         assertFalse(normalized.contains("managed sampling horizontal scrubbers"));
         assertFalse(normalized.contains("complete preset"));
         assertFalse(normalized.contains("lock-free bitwise lookups"));
+        assertFalse(normalized.contains("lock-free duplicate filters"));
+        assertFalse(normalized.contains("utilize lock-free"));
         assertFalse(normalized.contains("initcdnindex"));
     }
 

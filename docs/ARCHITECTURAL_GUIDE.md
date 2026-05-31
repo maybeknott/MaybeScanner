@@ -128,7 +128,7 @@ The user interface of MaybeScanner is programmatically generated in pure Java to
 
 The companion Go sidecar includes a robust suite of defenses:
 * **Provider Classification Index**: The current implementation uses a pointer-linked prefix helper protected by ordinary synchronization. It is a best-effort result annotation, not a lock-free arena-backed routing primitive.
-* **Lock-Free Duplicate Filters**: Evaluates IP targets as compact `map[[16]byte]bool` arrays rather than doing expensive string operations (`.String()`), slashing heap allocations.
+* **Compact dedup maps**: Evaluates IP targets as compact `map[[16]byte]bool` sets rather than repeated string operations (`.String()`), reducing heap churn during expansion. This is not a lock-free routing or prefix-index claim.
 * **Rolling Read/Write Deadlines**: Prevents slow-rate socket exhaustion by enforcing dynamic socket deadlines:
   ```go
   _ = conn.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
