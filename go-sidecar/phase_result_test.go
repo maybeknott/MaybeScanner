@@ -15,6 +15,7 @@ func TestPhaseStatusFromCode(t *testing.T) {
 		{code: "TLS_HANDSHAKE_RESET", want: "reset"},
 		{code: "SAFETY_RESERVED_RANGE_EXCLUDED", want: "skipped"},
 		{code: "HTTP2_UNSUPPORTED_IN_PROBE", want: "unsupported"},
+		{code: "TLS_VERIFY_HOSTNAME_MISMATCH", want: "failed"},
 		{code: "DNS_FAILED", want: "failed"},
 	}
 	for _, tc := range cases {

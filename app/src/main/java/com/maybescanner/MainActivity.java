@@ -3166,6 +3166,7 @@ public class MainActivity extends Activity {
         String tlsVersion = "", tlsCipher = "", tlsCert = "", certFingerprint = "", alpn = "", tlsProfile = "", altSvc = "", reason = "", networkClassification = "UNKNOWN";
         final java.util.ArrayList<PhaseResult> phaseResults = new java.util.ArrayList<>();
         String finalPhase = "", errorCode = "";
+        TargetPlanRecord targetPlan;
         boolean http3Hint;
         double quality;
 
@@ -3177,6 +3178,10 @@ public class MainActivity extends Activity {
             r.reason = reason;
             r.recordPhase(PhaseResult.failure("dns", 0, null, "DNS_RESOLUTION_FAILED"));
             return r.finish();
+        }
+        Result attachTargetPlan(TargetPlanRecord plan) {
+            this.targetPlan = plan;
+            return this;
         }
         void recordPhase(PhaseResult phase) {
             if (phase == null) return;
@@ -3350,6 +3355,11 @@ public class MainActivity extends Activity {
                 org.json.JSONArray phases = new org.json.JSONArray();
                 for (PhaseResult phase : phaseResults) phases.put(phase.toJson());
                 o.put("phase_results", phases);
+            }
+            if (targetPlan != null) {
+                o.put("target_plan", targetPlan.toJson());
+                o.put("plan_id", targetPlan.planId());
+                o.put("result_correlation_id", targetPlan.correlationId());
             }
             return o;
         }
