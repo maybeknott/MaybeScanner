@@ -76,6 +76,8 @@ That image is cached with BuildKit `gha` and registry layers so dependency downl
 
 `POST /api/scan` accepts JSON with targets, ports, HTTP path, worker count, timeout, optional pacing controls, and `tls_fingerprint`. Valid fingerprint values are `rotate`, `chrome`, `firefox`, `ios`, `randomized`, and `randomized-no-alpn`. Literal IP scans do not receive a default SNI; hostname-derived names are used only when present in the target plan or explicitly requested. Results stream as each target is processed, which keeps memory use predictable during large scans.
 
+Empty scan requests are rejected with a structured target-selection error instead of falling back to bundled public targets.
+
 Typical result fields include target, IP, port, SNI mode/name where applicable, TCP status, TLS status, HTTP status, latency, ALPN, selected TLS fingerprint, Alt-Svc and HTTP/3 hints, certificate subject/issuer/SAN values, server headers, best-effort network classification, and score.
 
 ## DNS Scan Request

@@ -35,11 +35,14 @@ public class ProductBoundaryRegressionTest {
 
     @Test
     public void maybeScannerDocsPreserveIpFirstContract() throws Exception {
-        String docs = read("README.md") + "\n" + read("docs/USER_GUIDE.md");
+        String docs = read("README.md") + "\n"
+                + read("docs/USER_GUIDE.md") + "\n"
+                + read("go-sidecar/README.md");
         String normalized = docs.toLowerCase(Locale.US);
 
         assertTrue(normalized.contains("target-first"));
         assertTrue(normalized.contains("literal ip scans do not receive a default sni"));
+        assertTrue(normalized.contains("empty scan requests are rejected"));
         assertTrue(normalized.contains("managed corpora"));
         assertTrue(normalized.contains("advanced diagnostics"));
     }
