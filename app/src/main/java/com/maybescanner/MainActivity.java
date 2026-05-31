@@ -86,34 +86,25 @@ public class MainActivity extends Activity {
             "preferred_network_mode2"
     };
     private static final int PREVIEW_TARGET_LIMIT = 12;
-    private static final int RESULT_QUEUE_CAPACITY = 8192;
-    private static final int RESULT_DRAIN_BATCH = 512;
     private static final int PREVIEW_CHIP_LIMIT = 12;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
+    private final ScanSessionController scanSession = ScanSessionController.get();
     private final Runnable hideFeedbackRunnable = this::hideFeedback;
-    private final AtomicBoolean stop = new AtomicBoolean(false);
     private final AtomicBoolean renderQueued = new AtomicBoolean(false);
-    private final AtomicBoolean resultDrainQueued = new AtomicBoolean(false);
     private final AtomicBoolean progressQueued = new AtomicBoolean(false);
     private final AtomicBoolean shizukuCommandRunning = new AtomicBoolean(false);
     private PrivilegedTelephonyBasebandManager basebandManager;
-    private final AtomicInteger checkedTargets = new AtomicInteger(0);
-    private final AtomicLong resultSequence = new AtomicLong(0);
-    private final AtomicLong scanGeneration = new AtomicLong(0);
+    private final AtomicLong previewGeneration = new AtomicLong(0);
     private final AtomicLong shizukuActionSequence = new AtomicLong(0);
-    private final ResultSessionStore<Result> resultStore = new ResultSessionStore<>();
-    private final BlockingQueue<ResultEvent> pendingResults = new ArrayBlockingQueue<>(RESULT_QUEUE_CAPACITY);
     private final ConcurrentHashMap<String, List<String>> assetLineCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, LinkedHashSet<String>> assetTokenCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, LinkedHashSet<String>> communityCorpusCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> assetReadLocks = new ConcurrentHashMap<>();
     private final LinkedHashSet<String> selectedSourceTargets = new LinkedHashSet<>();
-    private final LinkedHashSet<String> selectedSourceSnis = new LinkedHashSet<>();
     private final ArrayDeque<String> logLines = new ArrayDeque<>();
     private final StringBuilder stableLogBuilder = new StringBuilder();
     private final ExecutorService previewExecutor = Executors.newSingleThreadExecutor();
-    private ExecutorService executor;
     private boolean suppressUiRefresh;
     private String cachedResourceLine = "battery n/a | heap 0MB";
     private long cachedResourceLineAt;
@@ -148,24 +139,22 @@ public class MainActivity extends Activity {
     private TextView scanPlanView;
     private TextView targetInputStatsView;
     private EditText targetsInput, snisInput, totalInput, batchInput, threadsInput, timeoutInput;
-    private EditText communitySampleInput, akamaiSampleInput, cloudfrontSampleInput, fastlySampleInput, cloudflareSampleInput, otherCdnSampleInput, customTargetSampleInput;
-    private EditText portsInput, pathInput, maxLatencyInput, resultLimitInput, cdnFilterInput, certFilterInput, sniFilterInput, minQualityInput;
+    private EditText communitySampleInput, akamaiSampleInput, cloudfrontSampleInput, fastlySampleInput, cloudflareSampleInput, otherNetworkSampleInput, customTargetSampleInput;
+    private EditText portsInput, pathInput, maxLatencyInput, resultLimitInput, networkFilterInput, certFilterInput, sniFilterInput, minQualityInput;
     private EditText shizukuKeyInput, shizukuValueInput, logFilterInput;
     private TextView diagnosticOutputView;
     private Button runDiagnosticsButton;
-    private CheckBox multiSni, filterWorking, filterTlsHttp, bestPerIp, hideNoisyLogs, requireHttp, requireKnownCdn, requireTls13, batteryFriendlyUi;
+    private CheckBox multiSni, filterWorking, filterTlsHttp, bestPerIp, hideNoisyLogs, requireHttp, requireKnownNetwork, requireTls13, batteryFriendlyUi;
     private CheckBox diagnosticsOfflineMode, diagnosticsIncludePublicIp, exportPrivacyMode;
-    private CheckBox communitySourceEnabled, akamaiSourceEnabled, cloudfrontSourceEnabled, fastlySourceEnabled, cloudflareSourceEnabled, otherCdnSourceEnabled;
+    private CheckBox communitySourceEnabled, akamaiSourceEnabled, cloudfrontSourceEnabled, fastlySourceEnabled, cloudflareSourceEnabled, otherNetworkSourceEnabled;
     private CheckBox stepTcp, stepTls, stepHttp, stepVerify;
-    private Spinner profileSpinner, workflowSpinner, sortSpinner, exportSpinner, fileExportSpinner, tlsModeSpinner, cdnProviderSpinner;
+    private Spinner profileSpinner, workflowSpinner, sortSpinner, exportSpinner, fileExportSpinner, tlsModeSpinner, networkProviderSpinner;
     private Button startButton, stopButton, copyButton, copyCsvButton, exportButton, clearButton, helpButton;
     private Button tabTargetButton, tabLiveButton, tabDiagnosticsButton;
-    private int totalTargets;
     private int activeTab;
     private int visualizationMode;
     private int densityMode;
     private int resultOffset;
-    private long scanStartedAt;
     private final ArrayList<Button> visualizationButtons = new ArrayList<>();
     private final ArrayList<Button> densityButtons = new ArrayList<>();
 
@@ -181,12 +170,21 @@ public class MainActivity extends Activity {
             if (intent == null) return;
             String action = intent.getAction();
             if (ACTION_SERVICE_STOP_SCAN.equals(action)) {
-                requestStop();
+                ScanCommandBus.submit(context, ScanCommand.cancelScan("legacy_broadcast",
+                        ScanSessionController.get().currentGeneration()));
+            } else if (ScanCommandBus.ACTION_SCAN_COMMAND.equals(action)) {
+                onScanCommand(readScanCommand(intent));
             } else if (ScanForegroundService.ACTION_STATE_CHANGED.equals(action)) {
                 ScanForegroundService.ScanLifecycleSnapshot snapshot = ScanForegroundService.snapshot();
                 if (status != null && !"idle".equals(snapshot.state)) {
-                    status.setText(snapshot.state + ": " + snapshot.detail);
+                    status.setText(displayLifecycleState(snapshot));
+                    refreshActionButtons();
+                    renderProgressDirect();
                 }
+            } else if (ScanSessionUiSnapshot.ACTION_SNAPSHOT.equals(action)) {
+                applySessionSnapshot();
+            } else if (ScanExportBus.ACTION_EXPORT_COMPLETED.equals(action)) {
+                onExportCompleted(intent);
             }
         }
     };
@@ -199,17 +197,21 @@ public class MainActivity extends Activity {
         addShizukuListener();
         registerScanControlReceiver();
         ensureScanNotificationPermission();
+        scanSession.attachUi(this);
         refreshShizukuState();
         if (ACTION_QUICK_SCAN.equals(getIntent().getAction())) {
             ui.postDelayed(this::handleQuickScanIntent, 450);
         }
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        scanSession.attachUi(this);
+        applySessionSnapshot();
+    }
+
     @Override protected void onDestroy() {
-        stop.set(true);
-        if (executor != null) {
-            executor.shutdownNow();
-        }
+        scanSession.onActivityDestroy(this, isChangingConfigurations(), isFinishing());
         if (previewExecutor != null) {
             previewExecutor.shutdownNow();
         }
@@ -231,8 +233,8 @@ public class MainActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
-        outState.putString("result_session_id", resultStore.sessionId());
-        outState.putInt("result_count", resultStore.size());
+        outState.putString("result_session_id", scanSession.results().sessionId());
+        outState.putInt("result_count", scanSession.results().size());
         synchronized (logLines) {
             outState.putInt("log_count", logLines.size());
         }
@@ -243,7 +245,7 @@ public class MainActivity extends Activity {
         if (savedInstanceState == null) return;
         // Full scan rows/logs intentionally stay out of Activity bundles. A later
         // foreground-service session store will provide process-death recovery.
-        updateProgress();
+        scheduleProgressUpdate();
         scheduleRender();
     }
 
@@ -251,7 +253,10 @@ public class MainActivity extends Activity {
     private void registerScanControlReceiver() {
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_SERVICE_STOP_SCAN);
+        filter.addAction(ScanCommandBus.ACTION_SCAN_COMMAND);
         filter.addAction(ScanForegroundService.ACTION_STATE_CHANGED);
+        filter.addAction(ScanSessionUiSnapshot.ACTION_SNAPSHOT);
+        filter.addAction(ScanExportBus.ACTION_EXPORT_COMPLETED);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(scanControlReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
@@ -261,10 +266,9 @@ public class MainActivity extends Activity {
 
     private void handleQuickScanIntent() {
         selectTab(0);
-        toast("Quick scan preset loaded. Review the IP plan, then press Start.");
+        toast("Quick scan opened. Add targets, review the IP plan, then press Start.");
         updateScanPlanPreview();
-        ScanForegroundService.update(this, "waiting_for_confirmation",
-                "Quick scan request opened for review", 0);
+        ScanForegroundService.enterPlanReview(this, "Quick scan request opened for review");
     }
 
     private void ensureScanNotificationPermission() {
@@ -298,7 +302,7 @@ public class MainActivity extends Activity {
         tabs.setMinimumHeight(dp(62));
         tabs.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{Color.rgb(8, 18, 29), Color.rgb(5, 12, 20)}));
-        tabTargetButton = button("Sources", Color.rgb(21, 45, 62), Color.WHITE);
+        tabTargetButton = button("Targets", Color.rgb(21, 45, 62), Color.WHITE);
         tabLiveButton = button("Results", Color.rgb(21, 45, 62), Color.WHITE);
         tabDiagnosticsButton = button("Diagnostics", Color.rgb(21, 45, 62), Color.WHITE);
         tabs.addView(tabTargetButton, weight());
@@ -397,40 +401,31 @@ public class MainActivity extends Activity {
         diagnosticsScroll.addView(diagnosticsTab);
         contentContainer.addView(diagnosticsScroll);
 
-        // Populate Sources Tab
-        homeDashboardView = panelText("Network and system\nTransport: checking\nLAN/WAN: checking\nDNS: checking\nPolicy: checking\nCapacity: checking\nDevice: checking\nRuntime: checking");
+        // Populate Targets tab
+        homeDashboardView = panelText("Network and system\nTransport: checking\nAddresses: hidden by default\nDNS: checking\nPolicy: checking\nCapacity: checking\nDevice: checking\nRuntime: checking");
         targetTab.addView(homeDashboardView);
-        targetTab.addView(quietNote("Sources build an IP-first scan queue. Results show filtered cards, best host hints, and export actions. Diagnostics keeps logs, radio controls, and network context separate."));
+        targetTab.addView(quietNote("Add IPs, domains, CIDR blocks, or ranges first. Results show direct TCP, TLS, HTTP, latency, certificate names, and export actions."));
         helpButton = button("Reference", Color.rgb(23, 46, 63), Color.WHITE);
         targetTab.addView(helpButton);
 
-        targetAnchor = section("Sources");
+        targetAnchor = section("Targets");
         targetTab.addView(targetAnchor);
         targetsInput = area("Custom targets: IPv4, IPv6, domains, CIDR, ranges");
-        snisInput = area("Host hints are extracted from results");
+        snisInput = area("Inactive in MaybeScanner");
 
-        LinearLayout providerPanel = column();
-        providerPanel.addView(quietNote("Choose IP sources and a sample size. Counts show estimated expanded IPs, so CIDR ranges read as their real scan size instead of a tiny line/token count."));
         communitySampleInput = input("256", true);
         akamaiSampleInput = input("128", true);
         cloudfrontSampleInput = input("128", true);
         fastlySampleInput = input("128", true);
         cloudflareSampleInput = input("128", true);
-        otherCdnSampleInput = input("128", true);
-        communitySourceEnabled = check("Community tested /24s");
-        akamaiSourceEnabled = check("Akamai");
-        cloudfrontSourceEnabled = check("AWS CloudFront");
-        fastlySourceEnabled = check("Fastly");
-        cloudflareSourceEnabled = check("Cloudflare");
-        otherCdnSourceEnabled = check("GitHub, Azure, Google, Bunny, Edgio");
-        communitySourceEnabled.setChecked(true);
-        providerPanel.addView(sourceControl(communitySourceEnabled, communitySampleInput, "Default IPs, extra edge IPs, and community-tested /24 ranges.", communitySourceTotal()));
-        providerPanel.addView(sourceControl(akamaiSourceEnabled, akamaiSampleInput, "Akamai AS20940 plus known Akamai 184.x IP ranges.", akamaiSourceTotal()));
-        providerPanel.addView(sourceControl(cloudfrontSourceEnabled, cloudfrontSampleInput, "AWS CloudFront public IP ranges.", cloudfrontSourceTotal()));
-        providerPanel.addView(sourceControl(fastlySourceEnabled, fastlySampleInput, "Fastly AS54113 public IP ranges.", fastlySourceTotal()));
-        providerPanel.addView(sourceControl(cloudflareSourceEnabled, cloudflareSampleInput, "Cloudflare public IP ranges.", cloudflareSourceTotal()));
-        providerPanel.addView(sourceControl(otherCdnSourceEnabled, otherCdnSampleInput, "GitHub Pages, Azure Front Door, Google CDN, Bunny, Edgio, and other cloud/CDN IP ranges.", otherCdnSourceTotal()));
-        targetTab.addView(collapsibleBox("IP source selection", providerPanel, true));
+        otherNetworkSampleInput = input("128", true);
+        communitySourceEnabled = check("Bundled IP ranges");
+        akamaiSourceEnabled = check("Provider range A");
+        cloudfrontSourceEnabled = check("Provider range B");
+        fastlySourceEnabled = check("Provider range C");
+        cloudflareSourceEnabled = check("Provider range D");
+        otherNetworkSourceEnabled = check("Other provider ranges");
+        communitySourceEnabled.setChecked(false);
 
         // Modernized Unified Configuration Dashboard Container
         LinearLayout metricsDashboardCard = column();
@@ -438,7 +433,7 @@ public class MainActivity extends Activity {
         metricsDashboardCard.setPadding(dp(12), dp(12), dp(12), dp(12));
         setOuterMargin(metricsDashboardCard, 0, dp(6), 0, dp(8));
 
-        sourceSummaryView = text("Managed sources: initializing", 12, Color.rgb(196, 223, 235), false);
+        sourceSummaryView = text("Targets: initializing", 12, Color.rgb(196, 223, 235), false);
         sourceHealthView = text("Source health: checking", 11, Color.rgb(160, 195, 215), false);
         scanPlanView = text("Scan plan: mapping", 11, Color.WHITE, false);
         formatMonospace(scanPlanView, 11);
@@ -449,7 +444,7 @@ public class MainActivity extends Activity {
         metricsDashboardCard.addView(scanPlanView);
         targetTab.addView(metricsDashboardCard);
         targetTab.addView(section("Targets"));
-        targetTab.addView(quietNote("Add custom IPs, domains, CIDR blocks, or ranges here. Small lists are previewed below; large pastes stay summarized so the screen does not flood with raw input."));
+        targetTab.addView(quietNote("Add custom IPs, domains, CIDR blocks, or ranges here. The scanner expands them into IP targets and keeps long pastes summarized."));
         customTargetSampleInput = input("0", true);
         customTargetSampleInput.setVisibility(View.GONE);
         targetTab.addView(customInputActions(targetsInput, IMPORT_TARGETS_REQUEST_CODE, true));
@@ -459,24 +454,42 @@ public class MainActivity extends Activity {
         targetChipPreview = chipPanel();
         targetTab.addView(targetChipPreview);
         sniChipPreview = chipPanel();
-        targetTab.addView(quietNote("MaybeScanner scans IPs directly. IP/SNI route pairing belongs to MaybeEdgeScanner; certificate names discovered during TLS are still extracted and ranked in Results."));
+        sniChipPreview.setVisibility(View.GONE);
+        targetTab.addView(quietNote("MaybeScanner scans explicit targets. Certificate names and HTTP host names are discovered during probing and shown in Results."));
+
+        LinearLayout optionalSourcesPanel = column();
+        optionalSourcesPanel.addView(quietNote("Optional IP source sets are off by default. They add bounded IP targets to the same direct TCP/TLS/HTTP scan plan."));
+        optionalSourcesPanel.addView(sourceControl(communitySourceEnabled, communitySampleInput, "Bundled and community IP ranges for quick target expansion.", communitySourceTotal()));
+        optionalSourcesPanel.addView(sourceControl(akamaiSourceEnabled, akamaiSampleInput, "Provider-owned network range A. Classification remains a best-effort result annotation.", akamaiSourceTotal()));
+        optionalSourcesPanel.addView(sourceControl(cloudfrontSourceEnabled, cloudfrontSampleInput, "Provider-owned network range B. Use bounded samples for interactive scans.", cloudfrontSourceTotal()));
+        optionalSourcesPanel.addView(sourceControl(fastlySourceEnabled, fastlySampleInput, "Provider-owned network range C. Use explicit custom targets for precise scans.", fastlySourceTotal()));
+        optionalSourcesPanel.addView(sourceControl(cloudflareSourceEnabled, cloudflareSampleInput, "Provider-owned network range D. This only contributes IP targets.", cloudflareSourceTotal()));
+        optionalSourcesPanel.addView(sourceControl(otherNetworkSourceEnabled, otherNetworkSampleInput, "Additional provider-owned IP ranges kept behind the advanced panel.", otherNetworkSourceTotal()));
+        Button clearOptionalSources = button("Clear optional sources", Color.rgb(52, 35, 42), Color.WHITE);
+        clearOptionalSources.setOnClickListener(v -> {
+            clearManagedSources();
+            renderScanPlanPreviews();
+            refreshActionButtons();
+        });
+        optionalSourcesPanel.addView(clearOptionalSources);
+        targetTab.addView(collapsibleBox("Advanced optional IP sources", optionalSourcesPanel, false));
 
         LinearLayout workflowPanel = column();
         LinearLayout row1 = row();
-        profileSpinner = spinner(new String[]{"Quick TCP", "Standard TLS", "Deep HTTP", "Verify CDN edge"});
+        profileSpinner = spinner(new String[]{"Quick TCP", "Standard TLS", "Deep HTTP", "Full scan"});
         workflowSpinner = spinner(new String[]{"Single selected profile", "Auto multi-step ladder", "Manual selected steps"});
-        sortSpinner = spinner(new String[]{"Newest", "Latency", "Score", "CDN", "Host hint", "HTTP first", "TLS first"});
+        sortSpinner = spinner(new String[]{"Newest", "Latency", "Score", "Network", "Host name", "HTTP first", "TLS first"});
         tlsModeSpinner = spinner(new String[]{"Android default", "Chrome-like ALPN", "Firefox-like ALPN", "HTTP/1.1 only", "Rotate per probe"});
         row1.addView(box("Profile", profileSpinner), weight());
         row1.addView(box("Workflow", workflowSpinner), weight());
         workflowPanel.addView(row1);
         workflowPanel.addView(box("TLS ClientHello", tlsModeSpinner));
-        workflowPanel.addView(quietNote("Auto ladder runs TCP, TLS, HTTP, then CDN verification. Manual runs only checked stages."));
+        workflowPanel.addView(quietNote("Auto ladder runs TCP, TLS, HTTP, then certificate-name observation. Manual runs only checked stages."));
         LinearLayout stepRow1 = row();
         stepTcp = check("Step 1 TCP");
         stepTls = check("Step 2 TLS");
         stepHttp = check("Step 3 HTTP");
-        stepVerify = check("Step 4 Verify");
+        stepVerify = check("Step 4 Names");
         stepTcp.setChecked(true);
         stepTls.setChecked(true);
         stepHttp.setChecked(true);
@@ -499,11 +512,11 @@ public class MainActivity extends Activity {
         performancePanel.addView(modeRow);
 
         LinearLayout row2 = row();
-        totalInput = input("5000", true);
+        totalInput = input("0", true);
         batchInput = input("2000", true);
         threadsInput = input("32", true);
         timeoutInput = input("3000", true);
-        row2.addView(box("IP scan limit", totalInput), weight());
+        row2.addView(box("IP scan limit (0 = unlimited)", totalInput), weight());
         row2.addView(box("Batch", batchInput), weight());
         performancePanel.addView(row2);
         LinearLayout row3 = row();
@@ -520,15 +533,15 @@ public class MainActivity extends Activity {
         row4.addView(box("HTTP path", pathInput), weight());
         requestPanel.addView(row4);
 
-        multiSni = check("IP-only probing");
+        multiSni = check("Direct IP probing");
         multiSni.setChecked(false);
         multiSni.setEnabled(false);
-        filterWorking = check("Working only");
-        filterTlsHttp = check("TLS/HTTP only");
+        filterWorking = check("Successful only");
+        filterTlsHttp = check("Has TLS or HTTP");
         bestPerIp = check("Best per IP");
         hideNoisyLogs = check("Quiet logs");
-        requireHttp = check("HTTP only");
-        requireKnownCdn = check("Known CDN only");
+        requireHttp = check("Has HTTP");
+        requireKnownNetwork = check("Known network only");
         requireTls13 = check("TLS 1.3 only");
         batteryFriendlyUi = check("Battery-friendly UI");
         filterWorking.setChecked(true);
@@ -544,8 +557,8 @@ public class MainActivity extends Activity {
         // Populate Results Tab
         liveAnchor = section("Results");
         liveTab.addView(liveAnchor);
-        metrics = text("0 / 0 | TCP 0 | TLS 0 | HTTP 0 | Q 0", 13, Color.WHITE, false);
-        countersView = text("Down 0 | timeout 0 | reset 0 | cert 0 | DNS 0 | " + resourceLine(), 12, MUTED, false);
+        metrics = text("No scan yet | TCP 0 | TLS 0 | HTTP 0 | Score 0", 13, Color.WHITE, false);
+        countersView = text("Failed 0 | timed out 0 | reset 0 | cert 0 | DNS 0 | " + resourceLine(), 12, MUTED, false);
         bestView = panelText(stableBestPlaceholder());
         bestView.setMinLines(3);
         bestView.setGravity(Gravity.CENTER_VERTICAL);
@@ -568,17 +581,14 @@ public class MainActivity extends Activity {
         filterPanel.addView(resultFilterToggles1);
         LinearLayout resultFilterToggles2 = row();
         resultFilterToggles2.addView(requireHttp, weight());
-        resultFilterToggles2.addView(requireKnownCdn, weight());
+        resultFilterToggles2.addView(requireTls13, weight());
         filterPanel.addView(resultFilterToggles2);
         LinearLayout resultFilterToggles3 = row();
-        resultFilterToggles3.addView(requireTls13, weight());
         resultFilterToggles3.addView(bestPerIp, weight());
         filterPanel.addView(resultFilterToggles3);
-        cdnProviderSpinner = spinner(new String[]{"Any provider", "Known CDN", "Akamai", "Cloudflare", "CloudFront/AWS", "Fastly", "GitHub", "Google", "Azure", "Bunny", "Unknown"});
-        LinearLayout providerFilterRow = row();
-        providerFilterRow.addView(box("Sort cards", sortSpinner), weight());
-        providerFilterRow.addView(box("Provider filter", cdnProviderSpinner), weight());
-        filterPanel.addView(providerFilterRow);
+        LinearLayout sortFilterRow = row();
+        sortFilterRow.addView(box("Sort cards", sortSpinner), weight());
+        filterPanel.addView(sortFilterRow);
         LinearLayout row5 = row();
         maxLatencyInput = input("", true); maxLatencyInput.setHint("Any");
         resultLimitInput = input("1000", true);
@@ -586,29 +596,27 @@ public class MainActivity extends Activity {
         row5.addView(box("Visible rows", resultLimitInput), weight());
         filterPanel.addView(row5);
         LinearLayout row6 = row();
-        cdnFilterInput = input("", false); cdnFilterInput.setHint("Any CDN");
         certFilterInput = input("", false); certFilterInput.setHint("Certificate contains");
-        row6.addView(box("CDN contains", cdnFilterInput), weight());
         row6.addView(box("Cert contains", certFilterInput), weight());
         filterPanel.addView(row6);
         LinearLayout row7 = row();
-        sniFilterInput = input("", false); sniFilterInput.setHint("Any host hint");
+        sniFilterInput = input("", false); sniFilterInput.setHint("Any host name");
         minQualityInput = input("", true); minQualityInput.setHint("Any");
-        row7.addView(box("Host hint contains", sniFilterInput), weight());
+        row7.addView(box("Host name contains", sniFilterInput), weight());
         row7.addView(box("Min score", minQualityInput), weight());
         filterPanel.addView(row7);
         Button clearFiltersButton = button("Clear filters", Color.rgb(24, 45, 58), Color.WHITE);
         clearFiltersButton.setOnClickListener(v -> clearResultFilters());
         LinearLayout quickFilterRow = row();
-        Button quickWorkingButton = button("Working", Color.rgb(23, 78, 67), Color.WHITE);
+        Button quickWorkingButton = button("Successful", Color.rgb(23, 78, 67), Color.WHITE);
         quickWorkingButton.setOnClickListener(v -> {
             filterWorking.setChecked(true);
             filterTlsHttp.setChecked(false);
             requireHttp.setChecked(false);
-            requireKnownCdn.setChecked(false);
+            requireKnownNetwork.setChecked(false);
             renderResultsFromFirstPage();
         });
-        Button quickTlsButton = button("TLS/HTTP", Color.rgb(52, 67, 91), Color.WHITE);
+        Button quickTlsButton = button("TLS or HTTP", Color.rgb(52, 67, 91), Color.WHITE);
         quickTlsButton.setOnClickListener(v -> {
             filterWorking.setChecked(true);
             filterTlsHttp.setChecked(true);
@@ -628,6 +636,19 @@ public class MainActivity extends Activity {
         filterPanel.addView(clearFiltersButton);
         liveTab.addView(collapsibleBox("Filter, sort, and page cards", filterPanel, true));
 
+        LinearLayout classificationFilterPanel = column();
+        classificationFilterPanel.addView(quietNote("Optional best-effort network classification filters. These never define what MaybeScanner scans."));
+        LinearLayout classToggleRow = row();
+        classToggleRow.addView(requireKnownNetwork, weight());
+        classificationFilterPanel.addView(classToggleRow);
+        networkProviderSpinner = spinner(new String[]{"Any network", "Known network", "Akamai", "Cloudflare", "CloudFront/AWS", "Fastly", "GitHub", "Google", "Azure", "Bunny", "Unknown"});
+        classificationFilterPanel.addView(box("Network filter", networkProviderSpinner));
+        LinearLayout classTextRow = row();
+        networkFilterInput = input("", false); networkFilterInput.setHint("Any network");
+        classTextRow.addView(box("Network contains", networkFilterInput), weight());
+        classificationFilterPanel.addView(classTextRow);
+        liveTab.addView(collapsibleBox("Advanced classification filters", classificationFilterPanel, false));
+
         LinearLayout exportPanel = column();
         exportPanel.addView(quietNote("Clipboard uses filtered cards. File export streams full session results with schema + redaction metadata."));
         LinearLayout buttons = row();
@@ -639,7 +660,7 @@ public class MainActivity extends Activity {
         buttons.addView(exportButton, weight());
         exportPanel.addView(buttons);
         LinearLayout exportRow = row();
-        exportSpinner = spinner(new String[]{"Line-separated IPs", "Comma-separated IPs", "IP host hints", "CSV rows", "JSON"});
+        exportSpinner = spinner(new String[]{"Line-separated IPs", "Comma-separated IPs", "IP host names", "CSV rows", "JSON"});
         exportRow.addView(box("Clipboard format", exportSpinner), weight());
         exportPanel.addView(exportRow);
         fileExportSpinner = spinner(new String[]{"JSONL session export", "CSV session export", "Markdown report", "Nmap-like XML"});
@@ -742,13 +763,13 @@ public class MainActivity extends Activity {
         tabDiagnosticsButton.setOnClickListener(v -> selectTab(2));
         copyButton.setOnClickListener(v -> copySelectedFormat());
         copyCsvButton.setOnClickListener(v -> copyVisibleCsv());
-        exportButton.setOnClickListener(v -> exportJson());
+        exportButton.setOnClickListener(v -> submitExportCommand());
         View.OnClickListener refresh = v -> renderResultsFromFirstPage();
         filterWorking.setOnClickListener(refresh);
         filterTlsHttp.setOnClickListener(refresh);
         bestPerIp.setOnClickListener(refresh);
         requireHttp.setOnClickListener(refresh);
-        requireKnownCdn.setOnClickListener(refresh);
+        requireKnownNetwork.setOnClickListener(refresh);
         requireTls13.setOnClickListener(refresh);
         View.OnClickListener planClick = v -> updateScanPlanPreview();
         stepTcp.setOnClickListener(planClick);
@@ -764,7 +785,7 @@ public class MainActivity extends Activity {
             @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) { renderResultsFromFirstPage(); }
             @Override public void onNothingSelected(AdapterView<?> p) {}
         });
-        cdnProviderSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+        networkProviderSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) { renderResultsFromFirstPage(); }
             @Override public void onNothingSelected(AdapterView<?> p) {}
         });
@@ -785,7 +806,7 @@ public class MainActivity extends Activity {
         pathInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
         maxLatencyInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
         resultLimitInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
-        cdnFilterInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
+        networkFilterInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
         certFilterInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
         sniFilterInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
         minQualityInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
@@ -796,6 +817,7 @@ public class MainActivity extends Activity {
         updateHomeDashboard();
         updateAnalytics(Collections.emptyList());
         renderScanPlanPreviews();
+        refreshActionButtons();
         selectTab(0);
     }
 
@@ -818,13 +840,42 @@ public class MainActivity extends Activity {
             headerContainer.setPadding(dp(14) + left, dp(6) + top, dp(14) + right, dp(6));
             int safeBottom = Math.max(bottom, dp(10));
             tabs.setPadding(dp(6) + left, dp(4), dp(6) + right, safeBottom);
-            int contentBottom = dp(104) + bottom;
-            if (targetTab != null) targetTab.setPadding(dp(14) + left, dp(10), dp(14) + right, contentBottom);
-            if (liveTab != null) liveTab.setPadding(dp(14) + left, dp(10), dp(14) + right, contentBottom);
-            if (diagnosticsTab != null) diagnosticsTab.setPadding(dp(14) + left, dp(10), dp(14) + right, contentBottom);
+            applyScrollContentInsets(left, right, bottom, tabs);
             return insets;
         });
+        tabs.post(() -> applyScrollContentInsets(0, 0, 0, tabs));
         screen.requestApplyInsets();
+    }
+
+    private void applyScrollContentInsets(int left, int right, int bottom, LinearLayout tabs) {
+        int tabHeight = tabs == null || tabs.getHeight() <= 0 ? dp(72) : tabs.getHeight();
+        int contentBottom = tabHeight + bottom + dp(28);
+        if (targetTab != null) targetTab.setPadding(dp(14) + left, dp(8), dp(14) + right, contentBottom);
+        if (liveTab != null) liveTab.setPadding(dp(14) + left, dp(8), dp(14) + right, contentBottom);
+        if (diagnosticsTab != null) diagnosticsTab.setPadding(dp(14) + left, dp(8), dp(14) + right, contentBottom);
+    }
+
+    private String displayLifecycleState(ScanForegroundService.ScanLifecycleSnapshot snapshot) {
+        if (snapshot == null || snapshot.state == null || "idle".equals(snapshot.state)) {
+            return hasRunnableTargets() ? "Ready" : "No targets selected";
+        }
+        String state = snapshot.state.trim().toLowerCase(Locale.US);
+        String detail = snapshot.detail == null ? "" : snapshot.detail.trim();
+        if (("running".equals(state) || "planning".equals(state) || "cancelling".equals(state))
+                && (detail.isEmpty() || detail.startsWith("0 / 0"))) {
+            return hasRunnableTargets() ? humanState(state) : "No targets selected";
+        }
+        if ("waiting_for_confirmation".equals(state)) return "Review scan plan";
+        return detail.isEmpty() ? humanState(state) : humanState(state) + ": " + detail;
+    }
+
+    private String humanState(String state) {
+        if (state == null || state.isEmpty()) return "Ready";
+        if ("running".equals(state)) return "Running";
+        if ("planning".equals(state)) return "Planning";
+        if ("cancelling".equals(state)) return "Stopping";
+        if ("waiting_for_confirmation".equals(state)) return "Review scan plan";
+        return Character.toUpperCase(state.charAt(0)) + state.substring(1).replace('_', ' ');
     }
 
     private String networkContextLine() {
@@ -847,13 +898,7 @@ public class MainActivity extends Activity {
 
     private void updateHomeDashboard() {
         if (homeDashboardView == null) return;
-        homeDashboardView.setText(homeDashboardText("checking..."));
-        new Thread(() -> {
-            String publicIp = fetchPublicIp();
-            ui.post(() -> {
-                if (homeDashboardView != null) homeDashboardView.setText(homeDashboardText(publicIp));
-            });
-        }, "public-ip-lookup").start();
+        homeDashboardView.setText(homeDashboardText("hidden"));
     }
 
     private String homeDashboardText(String publicIp) {
@@ -865,7 +910,6 @@ public class MainActivity extends Activity {
             NetworkCapabilities caps = cm.getNetworkCapabilities(network);
             LinkProperties lp = cm.getLinkProperties(network);
             String transport = transportName(caps);
-            String privateIp = privateIps(lp);
             String dns = dnsServers(lp);
             String dnsProvider = dnsProvider(dns);
             String dnsStatus = dnsStatus(caps, lp);
@@ -874,7 +918,7 @@ public class MainActivity extends Activity {
             String capacity = capacityStatus(caps);
             return "Network and system\n" +
                     "Transport: " + transport + "\n" +
-                    "LAN/WAN: " + privateIp + " -> " + publicIp + "\n" +
+                    "Addresses: hidden by default\n" +
                     "DNS: " + dnsProvider + " (" + dns + ")\n" +
                     "Policy: " + proxyVpn + "\n" +
                     "State: " + dnsStatus + " | " + providerStatus + "\n" +
@@ -1030,8 +1074,8 @@ public class MainActivity extends Activity {
         return SourceCatalog.cloudflareTotal(sourceCatalogLoader());
     }
 
-    private int otherCdnSourceTotal() {
-        return SourceCatalog.otherCdnTotal(sourceCatalogLoader());
+    private int otherNetworkSourceTotal() {
+        return SourceCatalog.otherNetworkTotal(sourceCatalogLoader());
     }
 
     private SourceCatalog.Loader sourceCatalogLoader() {
@@ -1044,8 +1088,8 @@ public class MainActivity extends Activity {
                 return loadAssetTokens(asset);
             }
 
-            @Override public Set<String> communityEdges(String ipAsset, String cidrAsset) {
-                return communityEdgeCorpus(ipAsset, cidrAsset);
+            @Override public Set<String> communityIpSources(String ipAsset, String cidrAsset) {
+                return communityIpCorpus(ipAsset, cidrAsset);
             }
 
             @Override public int estimatedIps(Collection<String> entries) {
@@ -1081,15 +1125,14 @@ public class MainActivity extends Activity {
         int current = intValue(input, 0);
         if (current == 128 || current == 256 || current == 512) input.setText(String.valueOf(presetValues[0]));
         input.addTextChangedListener(simpleWatcher(this::renderScanPlanPreviews));
-        enabled.setOnClickListener(v -> renderScanPlanPreviews());
+        enabled.setOnClickListener(v -> updateScanPlanPreview());
         controls.addView(enabled, new LinearLayout.LayoutParams(0, -2, 1));
         panel.addView(controls);
         LinearLayout presets = row();
         presets.addView(samplePresetButton(input, String.valueOf(presetValues[0]), presetValues[0]), weight());
         presets.addView(samplePresetButton(input, String.valueOf(presetValues[1]), presetValues[1]), weight());
-        presets.addView(samplePresetButton(input, "All", 0), weight());
         panel.addView(presets);
-        TextView hint = text(detail + "\nEstimated corpus: " + countLabel(availableIps) + " IPs. Use a sample for exploration, All for deliberate full-source scans, and add one-off custom IPs below.", 10, Color.rgb(155, 184, 198), false);
+        TextView hint = text(detail + "\nEstimated corpus: " + countLabel(availableIps) + " IPs. Use a bounded IP budget for normal runs and add one-off custom IPs below.", 10, Color.rgb(155, 184, 198), false);
         panel.addView(hint);
         return panel;
     }
@@ -1103,7 +1146,7 @@ public class MainActivity extends Activity {
             suppressUiRefresh = false;
             renderScanPlanPreviews();
         });
-        b.setContentDescription(label.equals("All") ? "Use every estimated IP from this source" : "Use a sample of " + label + " IPs from this source");
+        b.setContentDescription("Use an IP budget of " + label + " addresses from this source");
         return b;
     }
 
@@ -1176,7 +1219,7 @@ public class MainActivity extends Activity {
     }
 
     private void addBestResultIp(EditText input) {
-        Result best = bestVisibleResult(resultStore.snapshot());
+        Result best = bestVisibleResult(scanSession.results().snapshot());
         if (best == null || best.ip == null || best.ip.trim().isEmpty()) {
             toast("No best IP yet");
             return;
@@ -1197,18 +1240,15 @@ public class MainActivity extends Activity {
         synchronized (selectedSourceTargets) {
             selectedSourceTargets.clear();
         }
-        synchronized (selectedSourceSnis) {
-            selectedSourceSnis.clear();
-        }
         if (communitySourceEnabled != null) communitySourceEnabled.setChecked(false);
         if (akamaiSourceEnabled != null) akamaiSourceEnabled.setChecked(false);
         if (cloudfrontSourceEnabled != null) cloudfrontSourceEnabled.setChecked(false);
         if (fastlySourceEnabled != null) fastlySourceEnabled.setChecked(false);
         if (cloudflareSourceEnabled != null) cloudflareSourceEnabled.setChecked(false);
-        if (otherCdnSourceEnabled != null) otherCdnSourceEnabled.setChecked(false);
-        if (sourceSummaryView != null) sourceSummaryView.setText("Managed sources disabled. Custom targets remain untouched.");
+        if (otherNetworkSourceEnabled != null) otherNetworkSourceEnabled.setChecked(false);
+        if (sourceSummaryView != null) sourceSummaryView.setText("Optional source sets disabled. Custom targets remain untouched.");
         renderScanPlanPreviews();
-        toast("Managed sources cleared");
+        toast("Optional source sets cleared");
     }
 
     private Button modeButton(String title, String subtitle, int totalLimit, int batch, int threads, int timeout) {
@@ -1274,11 +1314,12 @@ public class MainActivity extends Activity {
 
     private void renderScanPlanPreviews() {
         if (targetChipPreview == null || sniChipPreview == null || targetsInput == null || snisInput == null) return;
+        final long generation = previewGeneration.incrementAndGet();
         
         final String rawTargetsText = targetsInput.getText().toString();
         final String rawSnisText = snisInput.getText().toString();
         final String targetStatsText = customTargetStatsText(rawTargetsText);
-        final int targetCap = Math.max(1, intValue(totalInput, 72000));
+        final int targetCap = intValue(totalInput, 0);
         
         final boolean community = checked(communitySourceEnabled);
         final int communityCount = intValue(communitySampleInput, 0);
@@ -1290,8 +1331,8 @@ public class MainActivity extends Activity {
         final int fastlyCount = intValue(fastlySampleInput, 0);
         final boolean cloudflare = checked(cloudflareSourceEnabled);
         final int cloudflareCount = intValue(cloudflareSampleInput, 0);
-        final boolean otherCdn = checked(otherCdnSourceEnabled);
-        final int otherCdnCount = intValue(otherCdnSampleInput, 0);
+        final boolean otherNetwork = checked(otherNetworkSourceEnabled);
+        final int otherNetworkCount = intValue(otherNetworkSampleInput, 0);
         
         final int threads = Math.max(1, intValue(threadsInput, 32));
         final int batch = Math.max(1, intValue(batchInput, 2000));
@@ -1302,17 +1343,18 @@ public class MainActivity extends Activity {
         final String portsText = portsInput == null ? "443" : portsInput.getText().toString();
         
         previewExecutor.execute(() -> {
-            rebuildManagedSourcesBg(community, communityCount, akamai, akamaiCount, cloudfront, cloudfrontCount, fastly, fastlyCount, cloudflare, cloudflareCount, otherCdn, otherCdnCount);
+            rebuildManagedSourcesBg(community, communityCount, akamai, akamaiCount, cloudfront, cloudfrontCount, fastly, fastlyCount, cloudflare, cloudflareCount, otherNetwork, otherNetworkCount);
             
             final List<String> targetTokens = combinedTargetTokens(rawTargetsText);
             final int estimatedTargets = estimateExpandedTargetCount(targetTokens, Integer.MAX_VALUE);
-            final List<String> previewTargets = previewExpandedTargets(targetTokens, Math.min(targetCap, PREVIEW_TARGET_LIMIT));
+            final List<String> previewTargets = previewExpandedTargets(targetTokens, targetCap <= 0 ? PREVIEW_TARGET_LIMIT : Math.min(targetCap, PREVIEW_TARGET_LIMIT));
             
-            final String summaryText = getSummaryText(community, akamai, cloudfront, fastly, cloudflare, otherCdn);
+            final String summaryText = getSummaryText(community, akamai, cloudfront, fastly, cloudflare, otherNetwork);
             final String healthText = getHealthText(rawTargetsText, rawSnisText, targetTokens, estimatedTargets, targetCap, threads, batch);
             final String planText = getPlanText(rawTargetsText, rawSnisText, targetTokens, targetCap, batch, threads, timeout, pathText, tlsMode, profiles, portsText);
             
             ui.post(() -> {
+                if (generation != previewGeneration.get()) return;
                 if (targetChipPreview == null || sniChipPreview == null) return;
                 
                 int managedSize;
@@ -1322,13 +1364,14 @@ public class MainActivity extends Activity {
                     customSize = sampleSource(lines(rawTargetsText), customTargetSampleInput == null ? 0 : intValue(customTargetSampleInput, 0)).size();
                 }
                 
-                renderChips(targetChipPreview, "IP preview (" + countLabel(Math.min(estimatedTargets, targetCap)) + " IPs planned, " + previewTargets.size() + " shown)", previewTargets, true);
-                renderChips(sniChipPreview, "MaybeScanner IP-only mode", Collections.emptyList(), false);
+                renderChips(targetChipPreview, "Target preview (" + countLabel(ScanTargetPlanner.effectiveScanCap(targetCap, estimatedTargets)) + " targets planned, " + previewTargets.size() + " shown)", previewTargets, true);
+                sniChipPreview.setVisibility(View.GONE);
                 
                 if (sourceSummaryView != null) sourceSummaryView.setText(summaryText);
                 if (sourceHealthView != null) sourceHealthView.setText(healthText);
                 if (scanPlanView != null) scanPlanView.setText(planText);
                 if (targetInputStatsView != null) targetInputStatsView.setText(targetStatsText);
+                refreshActionButtons();
             });
         });
     }
@@ -1351,15 +1394,11 @@ public class MainActivity extends Activity {
     }
 
     private List<String> combinedSniTokens() {
-        return combinedSniTokens(snisInput == null ? "" : snisInput.getText().toString());
+        return Collections.singletonList("");
     }
 
     private List<String> combinedSniTokens(String customSnisText) {
-        synchronized (selectedSourceSnis) {
-            LinkedHashSet<String> merged = new LinkedHashSet<>(selectedSourceSnis);
-            merged.addAll(lines(customSnisText));
-            return new ArrayList<>(merged);
-        }
+        return Collections.singletonList("");
     }
 
     private LinkedHashSet<String> sampledCustomTargets() {
@@ -1370,7 +1409,10 @@ public class MainActivity extends Activity {
         return sampleSource(lines(customTargetsText), customTargetSampleInput == null ? 0 : intValue(customTargetSampleInput, 0));
     }
 
-    private void updateScanPlanPreview() {}
+    private void updateScanPlanPreview() {
+        renderScanPlanPreviews();
+        refreshActionButtons();
+    }
 
     private void rebuildManagedSourcesBg(
             boolean community, int communityCount,
@@ -1378,18 +1420,15 @@ public class MainActivity extends Activity {
             boolean cloudfront, int cloudfrontCount,
             boolean fastly, int fastlyCount,
             boolean cloudflare, int cloudflareCount,
-            boolean otherCdn, int otherCdnCount) {
+            boolean otherNetwork, int otherNetworkCount) {
         synchronized (selectedSourceTargets) {
             selectedSourceTargets.clear();
-        }
-        synchronized (selectedSourceSnis) {
-            selectedSourceSnis.clear();
         }
         if (community) {
             synchronized (selectedSourceTargets) {
                 selectedSourceTargets.addAll(sampleSource(loadAsset(SourceCatalog.DEFAULT_TARGETS), communityCount));
-                selectedSourceTargets.addAll(sampleSource(loadAsset(SourceCatalog.DEFAULT_EDGES_EXTRA), communityCount));
-                selectedSourceTargets.addAll(sampleSource(communityEdgeCorpus(SourceCatalog.COMMUNITY_EDGE_IPS, SourceCatalog.COMMUNITY_EDGE_CIDRS_24), communityCount));
+                selectedSourceTargets.addAll(sampleSource(loadAsset(SourceCatalog.DEFAULT_IP_SOURCES_EXTRA), communityCount));
+                selectedSourceTargets.addAll(sampleSource(communityIpCorpus(SourceCatalog.COMMUNITY_IP_SOURCES, SourceCatalog.COMMUNITY_IP_CIDRS_24), communityCount));
             }
         }
         if (akamai) {
@@ -1413,26 +1452,26 @@ public class MainActivity extends Activity {
                 selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.CLOUDFLARE_RANGES), cloudflareCount));
             }
         }
-        if (otherCdn) {
+        if (otherNetwork) {
             synchronized (selectedSourceTargets) {
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.GITHUB_PAGES_RANGES), otherCdnCount));
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.AZURE_FRONTDOOR_RANGES), otherCdnCount));
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.GOOGLE_CDN_RANGES), otherCdnCount));
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.BUNNY_RANGES), otherCdnCount));
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.STACKPATH_EDGIO_RANGES), otherCdnCount));
-                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.OTHER_CLOUD_RANGES), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.GITHUB_PAGES_RANGES), otherNetworkCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.AZURE_FRONTDOOR_RANGES), otherNetworkCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.GOOGLE_EDGE_RANGES), otherNetworkCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.BUNNY_RANGES), otherNetworkCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.STACKPATH_EDGIO_RANGES), otherNetworkCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens(SourceCatalog.OTHER_CLOUD_RANGES), otherNetworkCount));
             }
         }
     }
 
-    private String getSummaryText(boolean community, boolean akamai, boolean cloudfront, boolean fastly, boolean cloudflare, boolean otherCdn) {
+    private String getSummaryText(boolean community, boolean akamai, boolean cloudfront, boolean fastly, boolean cloudflare, boolean otherNetwork) {
         ArrayList<String> enabled = new ArrayList<>();
-        if (community) enabled.add("Community");
-        if (akamai) enabled.add("Akamai");
-        if (cloudfront) enabled.add("CloudFront");
-        if (fastly) enabled.add("Fastly");
-        if (cloudflare) enabled.add("Cloudflare");
-        if (otherCdn) enabled.add("Other providers");
+        if (community) enabled.add("Bundled set");
+        if (akamai) enabled.add("Network set A");
+        if (cloudfront) enabled.add("Network set B");
+        if (fastly) enabled.add("Network set C");
+        if (cloudflare) enabled.add("Network set D");
+        if (otherNetwork) enabled.add("Other network sets");
 
         int estimated;
         int targetSize;
@@ -1441,9 +1480,9 @@ public class MainActivity extends Activity {
             targetSize = selectedSourceTargets.size();
         }
 
-        return "Managed IP sources\n" +
-                (enabled.isEmpty() ? "No IP source enabled" : joinComma(enabled)) + "\n" +
-                targetSize + " source rows -> about " + estimated + " IPs before the IP scan limit. Custom IPs are counted separately.";
+        return "Targets\n" +
+                (enabled.isEmpty() ? "Only custom targets are active" : joinComma(enabled)) + "\n" +
+                targetSize + " optional source rows -> about " + estimated + " IPs before the scan limit. Custom targets are counted separately.";
     }
 
     private String getHealthText(
@@ -1457,23 +1496,24 @@ public class MainActivity extends Activity {
             managedTargets = selectedSourceTargets.size();
         }
 
-        int cappedTargets = Math.min(estimatedTargets, targetCap);
+        int cappedTargets = ScanTargetPlanner.effectiveScanCap(targetCap, estimatedTargets);
 
         String composition = targetTokens.isEmpty()
-                ? "No IP sources selected yet."
-                : managedTargets + " managed source rows + " + customTargets + " custom rows, deduped before IP expansion.";
+                ? "No targets selected yet."
+                : managedTargets + " optional source rows + " + customTargets + " custom rows, deduped before IP expansion.";
 
-        String routeScope = "IP-only scope; SNI/host names are extracted from TLS and HTTP results, not paired as scan input.";
+        String routeScope = "Target-first scope; TLS and HTTP host names are extracted from results, not paired as scan input.";
 
         return "Source health\n" +
                 composition + "\n" +
-                "Expanded estimate: " + estimatedTargets + " IPs; IP scan limit allows " + cappedTargets + " this run.\n" +
+                "Expanded estimate: " + estimatedTargets + " IPs; IP scan limit: " + ScanTargetPlanner.scanLimitLabel(targetCap) +
+                (targetCap <= 0 ? " (all expanded IPs eligible)." : (" (" + cappedTargets + " this run).")) + "\n" +
                 routeScope + "\n" +
                 sourceLoadPostureBg(estimatedTargets, targetCap, threads, batch);
     }
 
     private String sourceLoadPostureBg(int estimatedTargets, int targetCap, int threads, int batch) {
-        int capped = Math.min(estimatedTargets, targetCap);
+        int capped = ScanTargetPlanner.effectiveScanCap(targetCap, estimatedTargets);
         if (capped == 0) return "Posture: idle; add or select IP targets before scanning.";
         if (capped > 12000 || threads > 64 || batch > 8000) return "Posture: wide/high-load; better for plugged-in devices or the sidecar.";
         if (capped < 500 || threads <= 16) return "Posture: light validation; good for tuning filters and unstable mobile links.";
@@ -1485,8 +1525,8 @@ public class MainActivity extends Activity {
             List<String> targetTokens, int targetCap, int batch, int threads, int timeout,
             String pathText, String tlsMode, List<Integer> profiles, String portsText) {
         int estimatedTargets = estimateExpandedTargetCount(targetTokens, Integer.MAX_VALUE);
-        int cappedTargets = Math.min(estimatedTargets, targetCap);
-        int sniCount = sniPairingEnabled() ? Math.max(1, combinedSniTokens(rawSnisText).size()) : 1;
+        int cappedTargets = ScanTargetPlanner.effectiveScanCap(targetCap, estimatedTargets);
+        int sniCount = 1;
         List<Integer> ports = parsePorts(portsText);
         int units = estimateAttemptUnits(cappedTargets, sniCount, ports.size(), profiles, false);
         
@@ -1500,8 +1540,8 @@ public class MainActivity extends Activity {
         if (!path.startsWith("/")) path = "/" + path;
 
         return "IP scan plan\n" +
-                managedTargets + " managed source rows + " + lines(rawTargetsText).size() + " custom rows -> " + estimatedTargets + " IPs available -> " + cappedTargets + " IPs selected by scan limit " + targetCap + "\n" +
-                (sniPairingEnabled() ? sniCount + " SNI host" + (sniCount == 1 ? "" : "s") + " kept separate for TLS/Host routing; " : "IP-only TLS/HTTP checks; ") + "ports " + ports + "\n" +
+                managedTargets + " optional source rows + " + lines(rawTargetsText).size() + " custom rows -> " + estimatedTargets + " targets available -> " + cappedTargets + " selected (limit " + ScanTargetPlanner.scanLimitLabel(targetCap) + ")\n" +
+                "Direct IP TLS/HTTP checks; discovered certificate and HTTP names appear as result host names; ports " + ports + "\n" +
                 "Runtime: batch " + batch + ", threads " + threads + ", timeout " + timeout + "ms, HTTP path " + path + "\n" +
                 "TLS ClientHello mode: " + tlsMode + "\n" +
                 workflowLabels(profiles) + " -> " + (profiles.isEmpty() ? "select at least one manual step." : "about " + units + " connection checks. Preset overlaps are deduped, not overridden.");
@@ -1558,7 +1598,7 @@ public class MainActivity extends Activity {
             state.overflowChip.setVisibility(View.GONE);
         }
         if (values.isEmpty()) {
-            bindPreviewChip(state.emptyChip, targets ? "Paste IPs, CIDRs, ranges, domains" : "Paste hostnames for TLS SNI", true);
+            bindPreviewChip(state.emptyChip, targets ? "Paste IPs, CIDRs, ranges, domains" : "No host input in MaybeScanner", true);
             state.emptyChip.setVisibility(View.VISIBLE);
         } else {
             state.emptyChip.setVisibility(View.GONE);
@@ -1801,9 +1841,9 @@ public class MainActivity extends Activity {
         prefs.edit().putBoolean("onboarded_v3", true).apply();
         ui.postDelayed(() -> new AlertDialog.Builder(this)
                 .setTitle("Welcome to MaybeScanner")
-                .setMessage("1. Pick target corpora: Akamai, CloudFront, Fastly, or all bundled presets.\n\n" +
-                        "2. Add custom targets only when needed: managed samples stay summarized instead of being pasted into the text field.\n\n" +
-                        "3. Scan and filter: choose a single profile, Auto multi-step ladder, or Manual selected steps. Results show progress, cards, provider filters, host hints, sorting, visual density, and export. Diagnostics keeps logs and support out of the way.")
+                .setMessage("1. Add targets: paste IPs, domains, CIDR blocks, ranges, or import a file.\n\n" +
+                        "2. Choose checks: TCP reachability, TLS certificate observation, and HTTP status.\n\n" +
+                        "3. Scan and filter: results show progress, cards, host names discovered from certificates/HTTP, sorting, visual density, and export. Diagnostics keeps logs and support out of the way.")
                 .setPositiveButton("Start setup", (d, which) -> scrollTo(targetAnchor))
                 .setNegativeButton("Guide", (d, which) -> showGuide())
                 .show(), 550);
@@ -1811,8 +1851,8 @@ public class MainActivity extends Activity {
 
     private void applyAccessibilityLabels() {
         targetsInput.setContentDescription("Targets input. Add domains, IP addresses, or CIDR ranges.");
-        snisInput.setContentDescription("Inactive host-route input. MaybeScanner scans IPs directly.");
-        startButton.setContentDescription("Start IP scan with selected sources, custom IPs, workflow, and performance values.");
+        snisInput.setContentDescription("Inactive host-route input. MaybeScanner scans explicit targets directly.");
+        startButton.setContentDescription("Start IP scan with selected targets, workflow, and performance values.");
         stopButton.setContentDescription("Stop the active scan.");
         copyButton.setContentDescription("Copy filtered results using the selected clipboard format.");
         progress.setContentDescription("Scan progress");
@@ -1824,20 +1864,20 @@ public class MainActivity extends Activity {
                 .setTitle("MaybeScanner guide")
                 .setMessage(
                         "What to scan\n" +
-                        "Targets are IPs, domains, or CIDR ranges. Source checkboxes enable bundled Akamai, AWS CloudFront, Fastly, other cloud, and community edge corpora. Use 0 for a full corpus or type an exact sample count.\n\n" +
-                        "IP-only scanning\nMaybeScanner scans IPs directly. It does not build route pairs; certificate names discovered during TLS are extracted later as host hints in Results.\n\n" +
+                        "Targets are IPs, domains, CIDR blocks, or ranges. Paste them into Targets or import a text file. Advanced IP sources are optional and start disabled.\n\n" +
+                        "Target-first scanning\nMaybeScanner expands the targets you provide, probes them directly, and extracts certificate names during TLS for later filtering in Results.\n\n" +
                         "Profiles\n" +
-                        "Quick TCP checks reachability. Standard TLS verifies certificates and ALPN where available. Deep HTTP adds HTTP HEAD checks. Verify CDN edge favors confirmed working CDN IPs.\n\n" +
+                        "Quick TCP checks reachability. Standard TLS verifies certificates and ALPN where available. Deep HTTP adds HTTP HEAD checks. Full scan runs the complete target-first check ladder.\n\n" +
                         "Workflows\n" +
-                        "Single runs one selected profile. Auto multi-step ladder runs TCP, then TLS, then HTTP, then CDN verification. Manual selected steps runs only the checked stages, useful when you want a focused pass without changing source selections.\n\n" +
+                        "Single runs one selected profile. Auto multi-step ladder runs TCP, then TLS, then HTTP, then certificate-name observation. Manual selected steps runs only the checked stages, useful when you want a focused pass without changing target selections.\n\n" +
                         "Visual modes\n" +
-                        "Comfort is the default card layout. Contrast avoids color-only status cues and increases card opacity. Compact reduces spacing so more edges fit on screen.\n\n" +
+                        "Comfort is the default card layout. Contrast avoids color-only status cues and increases card opacity. Compact reduces spacing so more IP results fit on screen.\n\n" +
                         "Performance parameters\n" +
-                        "IP scan limit is the number of expanded IPs this run may attempt after CIDR/range expansion; raise it only when you intentionally want full subnets or very large provider corpora. Batch controls how many IPs run per wave. Threads controls parallel sockets. Timeout ms controls how long each connect/TLS/HTTP check can wait.\n\n" +
+                        "IP scan limit is the number of expanded targets this run may attempt after CIDR/range expansion; raise it only when you intentionally want larger target sets. Batch controls how many targets run per wave. Threads controls parallel sockets. Timeout ms controls how long each connect/TLS/HTTP check can wait.\n\n" +
                         "Filtering and sorting\n" +
-                        "Results owns all browsing controls: Working only, TLS/HTTP only, HTTP only, Known CDN only, TLS 1.3 only, provider filter, host-hint filter, CDN text filter, certificate filter, max latency, visible row budget, and min score. Sort by Score to surface the strongest candidates.\n\n" +
+                        "Results owns all browsing controls: Successful only, Has TLS or HTTP, Has HTTP, TLS 1.3 only, host-name filter, certificate filter, max latency, visible row budget, and min score. Advanced classification filters are optional result annotations. Sort by Score to surface the strongest candidates.\n\n" +
                         "Copy and export\n" +
-                        "Copy filtered uses exactly the rows currently visible after filters and sort. Choose line-separated IPs, comma-separated IPs, IP host hints, CSV, or JSON. Copy never replaces the card surface; it only reports status.")
+                        "Copy filtered uses exactly the rows currently visible after filters and sort. Choose line-separated IPs, comma-separated IPs, IP host names, CSV, or JSON. Copy never replaces the card surface; it only reports status.")
                 .setPositiveButton("Got it", null)
                 .show();
     }
@@ -1848,20 +1888,26 @@ public class MainActivity extends Activity {
             warmSourceCaches();
             ui.post(() -> {
                 suppressUiRefresh = true;
-                if (communitySourceEnabled != null) communitySourceEnabled.setChecked(true);
+                if (communitySourceEnabled != null) communitySourceEnabled.setChecked(false);
+                if (akamaiSourceEnabled != null) akamaiSourceEnabled.setChecked(false);
+                if (cloudfrontSourceEnabled != null) cloudfrontSourceEnabled.setChecked(false);
+                if (fastlySourceEnabled != null) fastlySourceEnabled.setChecked(false);
+                if (cloudflareSourceEnabled != null) cloudflareSourceEnabled.setChecked(false);
+                if (otherNetworkSourceEnabled != null) otherNetworkSourceEnabled.setChecked(false);
                 targetsInput.setText("");
                 snisInput.setText("");
                 suppressUiRefresh = false;
-                status.setText("Ready");
+                status.setText("No targets selected");
                 renderScanPlanPreviews();
+                refreshActionButtons();
             });
         }, "source-loader").start();
     }
 
     private void warmSourceCaches() {
         loadAsset(SourceCatalog.DEFAULT_TARGETS);
-        loadAsset(SourceCatalog.DEFAULT_EDGES_EXTRA);
-        communityEdgeCorpus(SourceCatalog.COMMUNITY_EDGE_IPS, SourceCatalog.COMMUNITY_EDGE_CIDRS_24);
+        loadAsset(SourceCatalog.DEFAULT_IP_SOURCES_EXTRA);
+        communityIpCorpus(SourceCatalog.COMMUNITY_IP_SOURCES, SourceCatalog.COMMUNITY_IP_CIDRS_24);
         loadAssetTokens(SourceCatalog.AKAMAI_AS20940);
         loadAsset(SourceCatalog.AKAMAI_HOSTS_184X);
         loadAssetTokens(SourceCatalog.AWS_CLOUDFRONT_RANGES);
@@ -1869,7 +1915,7 @@ public class MainActivity extends Activity {
         loadAssetTokens(SourceCatalog.CLOUDFLARE_RANGES);
         loadAssetTokens(SourceCatalog.GITHUB_PAGES_RANGES);
         loadAssetTokens(SourceCatalog.AZURE_FRONTDOOR_RANGES);
-        loadAssetTokens(SourceCatalog.GOOGLE_CDN_RANGES);
+        loadAssetTokens(SourceCatalog.GOOGLE_EDGE_RANGES);
         loadAssetTokens(SourceCatalog.BUNNY_RANGES);
         loadAssetTokens(SourceCatalog.STACKPATH_EDGIO_RANGES);
         loadAssetTokens(SourceCatalog.OTHER_CLOUD_RANGES);
@@ -1882,7 +1928,7 @@ public class MainActivity extends Activity {
             checked(cloudfrontSourceEnabled), intValue(cloudfrontSampleInput, 0),
             checked(fastlySourceEnabled), intValue(fastlySampleInput, 0),
             checked(cloudflareSourceEnabled), intValue(cloudflareSampleInput, 0),
-            checked(otherCdnSourceEnabled), intValue(otherCdnSampleInput, 0)
+            checked(otherNetworkSourceEnabled), intValue(otherNetworkSampleInput, 0)
         );
         if (sourceSummaryView != null) {
             sourceSummaryView.setText(getSummaryText(
@@ -1891,13 +1937,52 @@ public class MainActivity extends Activity {
                 checked(cloudfrontSourceEnabled),
                 checked(fastlySourceEnabled),
                 checked(cloudflareSourceEnabled),
-                checked(otherCdnSourceEnabled)
+                checked(otherNetworkSourceEnabled)
             ));
         }
     }
 
     private boolean checked(CheckBox box) {
         return box != null && box.isChecked();
+    }
+
+    private boolean isScanRunning() {
+        return scanSession.isRunning();
+    }
+
+    private boolean hasRunnableTargets() {
+        if (portsInput != null && parsePorts(portsInput.getText().toString()).isEmpty()) return false;
+        InputStats custom = analyzeInput(targetsInput == null ? "" : targetsInput.getText().toString(), true);
+        return custom.valid > 0
+                || checked(communitySourceEnabled)
+                || checked(akamaiSourceEnabled)
+                || checked(cloudfrontSourceEnabled)
+                || checked(fastlySourceEnabled)
+                || checked(cloudflareSourceEnabled)
+                || checked(otherNetworkSourceEnabled);
+    }
+
+    private void refreshActionButtons() {
+        boolean running = isScanRunning();
+        boolean hasTargets = hasRunnableTargets();
+        boolean hasResults = !scanSession.results().isEmpty();
+
+        setActionButtonState(startButton, !running && hasTargets, BLUE, Color.rgb(2, 18, 24));
+        setActionButtonState(stopButton, running && !scanSession.isStopRequested(), Color.rgb(255, 102, 122), Color.WHITE);
+        setActionButtonState(clearButton, !running && hasResults, Color.rgb(34, 51, 66), Color.WHITE);
+
+        if (status != null && !running) {
+            status.setText(hasTargets ? "Ready" : "No targets selected");
+        }
+    }
+
+    private void setActionButtonState(Button button, boolean enabled, int activeBg, int activeFg) {
+        if (button == null) return;
+        button.setEnabled(enabled);
+        button.setAlpha(enabled ? 1.0f : 0.62f);
+        button.setTextColor(enabled ? activeFg : Color.rgb(150, 164, 176));
+        button.setBackground(glassBg(enabled ? activeBg : Color.rgb(30, 40, 50),
+                enabled ? Color.argb(125, 255, 255, 255) : Color.argb(65, 180, 195, 205)));
     }
 
     private LinkedHashSet<String> sampleSource(Collection<String> values, int count) {
@@ -1977,7 +2062,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private LinkedHashSet<String> communityEdgeCorpus(String ipAsset, String cidrAsset) {
+    private LinkedHashSet<String> communityIpCorpus(String ipAsset, String cidrAsset) {
         String key = ipAsset + "|" + cidrAsset;
         LinkedHashSet<String> cached = communityCorpusCache.get(key);
         if (cached != null) return new LinkedHashSet<>(cached);
@@ -1993,29 +2078,85 @@ public class MainActivity extends Activity {
     }
 
     private void startScan() {
-        if (executor != null && !executor.isShutdown()) {
+        if (scanSession.isRunning()) {
             toast("Scan is already running");
             selectTab(1);
             return;
         }
+        if (!hasRunnableTargets()) {
+            status.setText("No targets selected");
+            toast("Add targets before starting a scan");
+            selectTab(0);
+            refreshActionButtons();
+            return;
+        }
         rebuildManagedSources();
-        List<String> targets = expandTargets(combinedTargetTokens(), Math.max(1, intValue(totalInput, 5000)));
+        List<String> targets = expandTargets(combinedTargetTokens(), intValue(totalInput, 0));
+        List<Integer> ports = parsePorts(portsInput.getText().toString());
+        if (targets.isEmpty() || ports.isEmpty()) {
+            toast("Targets and ports are required");
+            refreshActionButtons();
+            return;
+        }
+        List<Integer> workflowProfiles = selectedWorkflowProfiles();
+        if (workflowProfiles.isEmpty()) {
+            toast("Select at least one manual workflow step");
+            selectTab(0);
+            updateScanPlanPreview();
+            return;
+        }
+        ScanStagingRequest request = buildStagingRequest();
+        if (request == null) {
+            refreshActionButtons();
+            return;
+        }
+        resetScanUiForNewSession();
+        status.setText("Running");
+        refreshActionButtons();
+        selectTab(1);
+        appendLog(request.logSummary);
+        appendResourceWarnings(request.threads, request.batch, request.timeout, request.targets.size());
+        ScanCommandBus.submit(this, ScanCommand.startScan("activity_ui", request));
+    }
+
+    private ScanStagingRequest buildStagingRequest() {
+        rebuildManagedSources();
+        List<String> targets = expandTargets(combinedTargetTokens(), intValue(totalInput, 0));
         List<String> snis = sniPairingEnabled() ? combinedSniTokens() : Collections.singletonList("");
         List<Integer> ports = parsePorts(portsInput.getText().toString());
         if (targets.isEmpty() || ports.isEmpty()) {
             toast("Targets and ports are required");
-            return;
+            return null;
         }
-        stop.set(false);
-        resultStore.clear();
-        pendingResults.clear();
-        resultDrainQueued.set(false);
+        if (snis.isEmpty()) snis = Collections.singletonList("");
+        List<Integer> workflowProfiles = selectedWorkflowProfiles();
+        if (workflowProfiles.isEmpty()) {
+            toast("Select at least one manual workflow step");
+            selectTab(0);
+            updateScanPlanPreview();
+            return null;
+        }
+        boolean allSniPreference = sniPairingEnabled() && multiSni.isChecked();
+        boolean suppressNoisyLogs = hideNoisyLogs.isChecked();
+        String httpPath = pathInput.getText().toString();
+        int tlsMode = tlsModeSpinner == null ? 0 : tlsModeSpinner.getSelectedItemPosition();
+        int plannedChecks = estimateAttemptUnits(targets.size(), snis.size(), ports.size(), workflowProfiles, allSniPreference);
+        int batch = Math.max(1, intValue(batchInput, 2000));
+        int threads = Math.max(1, intValue(threadsInput, 32));
+        int timeout = Math.max(1, intValue(timeoutInput, 3000));
+        String logSummary = "Scan started: expanded_targets=" + targets.size() + ", sni_hosts=" + snis.size() +
+                ", connection_checks=" + plannedChecks + ", ports=" + ports + ", batch=" + batch +
+                ", threads=" + threads + ", workflow=" + workflowSpinner.getSelectedItem() +
+                ", steps=" + workflowLabels(workflowProfiles);
+        return new ScanStagingRequest(
+                targets, snis, ports, workflowProfiles, plannedChecks,
+                batch, threads, timeout, tlsMode, allSniPreference, suppressNoisyLogs,
+                sniPairingEnabled(), httpPath, workflowLabels(workflowProfiles), logSummary, true);
+    }
+
+    private void resetScanUiForNewSession() {
         ui.removeCallbacks(progressRunnable);
         progressQueued.set(false);
-        resultSequence.set(0);
-        long generation = scanGeneration.incrementAndGet();
-        checkedTargets.set(0);
-        scanStartedAt = System.currentTimeMillis();
         resultSummaryContainer.removeAllViews();
         heatmapContainer.removeAllViews();
         pagerContainer.removeAllViews();
@@ -2034,48 +2175,123 @@ public class MainActivity extends Activity {
         lastRenderedLogText = "";
         logRenderedAt = 0;
         renderBestCard(Collections.emptyList());
-        if (snis.isEmpty()) snis = Collections.singletonList("");
-        List<Integer> workflowProfiles = selectedWorkflowProfiles();
-        if (workflowProfiles.isEmpty()) {
-            toast("Select at least one manual workflow step");
-            selectTab(0);
-            updateScanPlanPreview();
+    }
+    void applySessionSnapshot() {
+        ScanSessionUiSnapshot snapshot = scanSession.uiSnapshot();
+        if (status != null) {
+            if (snapshot.stopRequested) {
+                status.setText("Stopping");
+            } else if (snapshot.running || !"idle".equals(snapshot.lifecycleState)) {
+                status.setText(displayLifecycleState(ScanForegroundService.snapshot()));
+            }
+        }
+        refreshActionButtons();
+        scheduleProgressUpdate();
+        if (snapshot.running || snapshot.resultCount > 0) {
+            scheduleRender();
+        }
+    }
+
+    private void executeStartScan() {
+        applySessionSnapshot();
+    }
+
+    void onWorkflowFinishedUi(long generation, boolean stopRequested, ScanTerminalReason terminalReason) {
+        if (generation != scanSession.currentGeneration()) return;
+        startButton.setEnabled(true);
+        stopButton.setEnabled(false);
+        status.setText(stopRequested ? "Stopped" : "Ready");
+        appendLogOnUi((stopRequested ? "Stopped" : "Complete") + " in " + elapsed());
+        if (!stopRequested) saveLocalObservationHistory();
+        renderProgressDirect();
+        renderResults();
+        refreshActionButtons();
+    }
+
+    void onResultsDrained(java.util.List<ScanResultEvent> logEvents) {
+        for (ScanResultEvent event : logEvents) {
+            MainActivity.Result r = event.result;
+            appendLog("Result " + r.address() + " host=" + dash(r.sni) + " tcp=" + r.tcpPass +
+                    " tls=" + r.tlsPass + " http=" + r.httpPass + " q=" + Math.round(r.quality));
+        }
+        scheduleProgressUpdate();
+        scheduleRender();
+    }
+
+    void scheduleProgressUpdate() {
+        if (!progressQueued.compareAndSet(false, true)) return;
+        ui.postDelayed(progressRunnable, 120);
+    }
+
+    private void submitExportCommand() {
+        ScanCommandBus.submit(this, ScanCommand.exportResults("activity_ui", buildExportSpecFromUi()));
+    }
+
+    private ScanExportSpec buildExportSpecFromUi() {
+        int format = fileExportSpinner == null ? ScanExportSpec.FORMAT_JSONL : fileExportSpinner.getSelectedItemPosition();
+        String redaction = exportPrivacyMode != null && exportPrivacyMode.isChecked() ? "privacy" : "none";
+        return new ScanExportSpec(format, redaction, "ip_first", "maybescanner_export");
+    }
+
+    private void onExportCompleted(Intent intent) {
+        if (intent == null) return;
+        String error = intent.getStringExtra(ScanExportBus.EXTRA_ERROR);
+        String path = intent.getStringExtra(ScanExportBus.EXTRA_PATH);
+        if (error != null && !error.isEmpty()) {
+            toast("Export failed: " + error);
             return;
         }
-        boolean allSniPreference = sniPairingEnabled() && multiSni.isChecked();
-        boolean suppressNoisyLogs = hideNoisyLogs.isChecked();
-        String httpPath = pathInput.getText().toString();
-        int tlsMode = tlsModeSpinner == null ? 0 : tlsModeSpinner.getSelectedItemPosition();
-        totalTargets = estimateAttemptUnits(targets.size(), snis.size(), ports.size(), workflowProfiles, allSniPreference);
-        int batch = Math.max(1, intValue(batchInput, 2000));
-        int threads = Math.max(1, intValue(threadsInput, 32));
-        int timeout = Math.max(1, intValue(timeoutInput, 3000));
-
-        startButton.setEnabled(false);
-        stopButton.setEnabled(true);
-        status.setText("Running");
-        selectTab(1);
-        appendLog("Scan started: expanded_targets=" + targets.size() + ", sni_hosts=" + snis.size() +
-                ", connection_checks=" + totalTargets + ", ports=" + ports + ", batch=" + batch +
-                ", threads=" + threads + ", workflow=" + workflowSpinner.getSelectedItem() +
-                ", steps=" + workflowLabels(workflowProfiles));
-        ScanForegroundService.start(this, "running",
-                "0 / " + totalTargets + " checks", 0);
-        appendResourceWarnings(threads, batch, timeout, targets.size());
-        ExecutorService scanExecutor = Executors.newFixedThreadPool(threads);
-        executor = scanExecutor;
-        List<String> finalSnis = snis;
-        new Thread(() -> runWorkflow(generation, scanExecutor, targets, finalSnis, ports, batch, timeout, workflowProfiles,
-                allSniPreference, httpPath, tlsMode, suppressNoisyLogs), "scan-orchestrator").start();
+        if (path != null && !path.isEmpty()) {
+            toast("Exported: " + path);
+        }
     }
 
     private void requestStop() {
-        stop.set(true);
+        if (!isScanRunning()) {
+            refreshActionButtons();
+            return;
+        }
+        ScanCommandBus.submit(this, ScanCommand.cancelScan("activity_ui", scanSession.currentGeneration()));
+    }
+
+    private void executeCancelScan(ScanCommand command) {
+        if (command != null && !scanSession.matchesCommandGeneration(command.generation)) {
+            return;
+        }
         status.setText("Stopping");
-        stopButton.setEnabled(false);
+        refreshActionButtons();
         appendLog("Stop requested. Current sockets will finish or time out.");
-        ScanForegroundService.update(this, "cancelling",
-                checkedTargets.get() + " / " + totalTargets + " checks", progressPercent());
+        applySessionSnapshot();
+    }
+
+    private ScanCommand readScanCommand(Intent intent) {
+        if (intent == null) return null;
+        Object value = intent.getSerializableExtra(ScanCommandBus.EXTRA_COMMAND);
+        return value instanceof ScanCommand ? (ScanCommand) value : null;
+    }
+
+    private void onScanCommand(ScanCommand command) {
+        if (command == null) return;
+        switch (command.kind) {
+            case START_SCAN:
+                executeStartScan();
+                break;
+            case CANCEL_SCAN:
+                executeCancelScan(command);
+                break;
+            case CLEAR_SESSION:
+                resetResultsUiAfterClear();
+                applySessionSnapshot();
+                break;
+            case EXPORT_RESULTS:
+                break;
+            case REFRESH_PROVIDER_READINESS:
+                break;
+            case STOP_SIDECAR:
+                break;
+            default:
+                break;
+        }
     }
 
     private List<Integer> selectedWorkflowProfiles() {
@@ -2114,125 +2330,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void runWorkflow(long generation, ExecutorService scanExecutor, List<String> targets, List<String> snis, List<Integer> ports, int batchSize,
-                             int timeout, List<Integer> profiles, boolean allSniPreference,
-                             String httpPath, int tlsMode, boolean suppressNoisyLogs) {
-        for (int i = 0; i < profiles.size() && !stop.get() && generation == scanGeneration.get(); i++) {
-            int profile = profiles.get(i);
-            boolean allSni = sniPairingEnabled() && (allSniPreference || profile >= 2);
-            appendLog("Workflow step " + (i + 1) + "/" + profiles.size() + ": " + profileName(profile) +
-                    (sniPairingEnabled() ? (allSni ? " with multi-SNI" : " with primary SNI") : " with IP-only probing"));
-            runBatches(generation, scanExecutor, targets, snis, ports, batchSize, timeout, profile, allSni, httpPath, tlsMode, suppressNoisyLogs);
-        }
-        scanExecutor.shutdownNow();
-        ui.post(() -> {
-            if (generation != scanGeneration.get()) return;
-            if (executor == scanExecutor) executor = null;
-            startButton.setEnabled(true);
-            stopButton.setEnabled(false);
-            status.setText(stop.get() ? "Stopped" : "Ready");
-            appendLog((stop.get() ? "Stopped" : "Complete") + " in " + elapsed());
-            if (!stop.get()) checkedTargets.set(totalTargets);
-            if (!stop.get()) saveLocalObservationHistory();
-            renderProgressDirect();
-            ScanForegroundService.stop(this, stop.get() ? "Scan stopped" : "Scan completed");
-            renderResults();
-        });
-    }
-
-    private void runBatches(long generation, ExecutorService scanExecutor, List<String> targets, List<String> snis, List<Integer> ports, int batchSize,
-                            int timeout, int profile, boolean allSni, String httpPath, int tlsMode, boolean suppressNoisyLogs) {
-        int batches = (targets.size() + batchSize - 1) / batchSize;
-        for (int start = 0, batchNo = 1; start < targets.size() && !stop.get() && generation == scanGeneration.get(); start += batchSize, batchNo++) {
-            List<String> batch = targets.subList(start, Math.min(targets.size(), start + batchSize));
-            appendLog(profileName(profile) + " batch " + batchNo + "/" + batches + ": " + batch.size() + " targets");
-            CountDownLatch latch = new CountDownLatch(batch.size());
-            for (String target : batch) {
-                if (stop.get() || generation != scanGeneration.get()) {
-                    latch.countDown();
-                    continue;
-                }
-                try {
-                    scanExecutor.submit(() -> {
-                            try { scanTarget(generation, target, snis, ports, timeout, profile, allSni, httpPath, tlsMode, suppressNoisyLogs); }
-                        finally {
-                            updateProgress();
-                            latch.countDown();
-                        }
-                    });
-                } catch (RejectedExecutionException ignored) {
-                    latch.countDown();
-                }
-            }
-            try { latch.await(); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
-        }
-    }
-
     private void appendResourceWarnings(int threads, int batch, int timeout, int targets) {
-        if (threads >= 256 || batch >= 72000 || targets >= 72000) {
+        if (threads >= 256 || (batch > 0 && batch >= 250000) || (targets > 0 && targets >= 250000)) {
             appendLog("Warning: high-volume scan selected. Android may throttle sockets, battery, or thermal performance.");
         }
         if (timeout < 250) {
-            appendLog("Warning: very low timeout may miss slow-but-working edges.");
+            appendLog("Warning: very low timeout may miss slow-but-reachable targets.");
         }
-    }
-
-    private void scanTarget(long generation, String target, List<String> snis, List<Integer> ports, int timeout, int profile,
-                            boolean allSni, String httpPath, int tlsMode, boolean suppressNoisyLogs) {
-        if (stop.get() || generation != scanGeneration.get()) return;
-        List<String> ips = resolve(target);
-        if (ips.isEmpty()) {
-            addResult(generation, Result.down(target, "", 0, "", "dns_failed"), suppressNoisyLogs);
-            return;
-        }
-        for (String ip : ips) {
-            if (stop.get() || generation != scanGeneration.get()) return;
-            for (int port : ports) {
-                if (profile == 0) {
-                    Result base = new Result(target, ip, port, "");
-                    base.tcp(timeout);
-                    addResult(generation, base.finish(), suppressNoisyLogs);
-                    continue;
-                }
-                List<String> candidates = sniPairingEnabled()
-                        ? (allSni ? snis : Collections.singletonList(isIp(target) ? first(snis) : target))
-                        : Collections.singletonList("");
-                for (String sni : candidates) {
-                    if (stop.get() || generation != scanGeneration.get()) return;
-                    String routeSni = sni == null ? "" : sni.trim();
-                    Result r = new Result(target, ip, port, routeSni);
-                    r.tls(timeout, tlsMode);
-                    if (profile >= 2 && r.tlsPass) r.http(timeout, httpPath, tlsMode);
-                    addResult(generation, r.finish(), suppressNoisyLogs);
-                    if (profile == 3 && r.httpPass) break;
-                }
-            }
-        }
-    }
-
-    private void addResult(long generation, Result r, boolean suppressNoisyLogs) {
-        if (generation != scanGeneration.get()) return;
-        r.rowId = resultSequence.incrementAndGet();
-        checkedTargets.incrementAndGet();
-        ResultEvent event = new ResultEvent(r, suppressNoisyLogs, generation);
-        boolean queued = false;
-        while (!queued && !stop.get() && generation == scanGeneration.get()) {
-            try {
-                queued = pendingResults.offer(event, 250, TimeUnit.MILLISECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-            if (!queued) {
-                scheduleResultDrain();
-            }
-        }
-        if (queued && generation == scanGeneration.get()) scheduleResultDrain();
-    }
-
-    private void updateProgress() {
-        if (!progressQueued.compareAndSet(false, true)) return;
-        ui.postDelayed(progressRunnable, 120);
     }
 
     private final Runnable progressRunnable = () -> {
@@ -2241,25 +2345,39 @@ public class MainActivity extends Activity {
     };
 
     private int progressPercent() {
-        int total = Math.max(1, totalTargets);
-        int checked = Math.max(0, Math.min(checkedTargets.get(), total));
+        int total = Math.max(1, scanSession.totalTargets());
+        int checked = Math.max(0, Math.min(scanSession.checkedChecks(), total));
         return (int) Math.min(100, Math.max(0, Math.round((checked * 100.0) / total)));
     }
 
     private void renderProgressDirect() {
-        progress.setMax(Math.max(1, totalTargets));
-        int checked = Math.min(checkedTargets.get(), Math.max(1, totalTargets));
+        progress.setMax(Math.max(1, scanSession.totalTargets()));
+        int checked = Math.min(scanSession.checkedChecks(), Math.max(1, scanSession.totalTargets()));
         progress.setProgress(checked);
         Stats s = stats();
-        metrics.setText(checked + " / " + totalTargets + " checks | result events " + s.rows + " | TCP " + s.tcp +
-                " | TLS " + s.tls + " | HTTP " + s.http + " | Q " + Math.round(s.bestQuality) +
-                " | queued " + pendingResults.size() + " | " + elapsed());
-        countersView.setText("Down " + s.down + " | timeout " + s.timeout + " | reset " + s.reset +
-                " | cert " + s.cert + " | DNS " + s.dns + " | " + resourceLine());
-        if (executor != null && !executor.isShutdown()) {
-            ScanForegroundService.update(this, "running",
-                    checked + " / " + totalTargets + " checks", progressPercent());
+        String sessionInfo = sessionSummary();
+        if (scanSession.totalTargets() <= 0) {
+            metrics.setText("No scan yet | TCP 0 | TLS 0 | HTTP 0 | Score 0" + sessionInfo);
+        } else {
+            metrics.setText(checked + " / " + scanSession.totalTargets() + " checks | attempts completed " + s.rows + " | TCP " + s.tcp +
+                    " | TLS " + s.tls + " | HTTP " + s.http + " | Score " + Math.round(s.bestQuality) +
+                    " | pending " + scanSession.pendingResults().size() + " | " + elapsed() + sessionInfo);
         }
+        countersView.setText("Failed " + s.down + " | timed out " + s.timeout + " | reset " + s.reset +
+                " | cert " + s.cert + " | DNS " + s.dns + " | " + resourceLine());
+        if (scanSession.isRunning()) {
+            ScanForegroundService.updateSessionProgress(checked);
+            ScanForegroundService.update(this, "running",
+                    checked + " / " + scanSession.totalTargets() + " checks", progressPercent());
+        }
+    }
+
+    private String sessionSummary() {
+        ScanForegroundService.ScanSessionSnapshot snapshot = ScanForegroundService.sessionSnapshot();
+        if (snapshot == null || snapshot.sessionId == null || snapshot.sessionId.trim().isEmpty()) {
+            return "";
+        }
+        return " | session " + snapshot.sessionId + " (" + snapshot.completedChecks + "/" + snapshot.plannedChecks + ")";
     }
 
     private void scheduleRender() {
@@ -2273,35 +2391,9 @@ public class MainActivity extends Activity {
         renderResults();
     };
 
-    private final Runnable resultDrainRunnable = () -> {
-        resultDrainQueued.set(false);
-        int drained = 0;
-        ResultEvent event;
-        while (drained < RESULT_DRAIN_BATCH && (event = pendingResults.poll()) != null) {
-            if (event.generation != scanGeneration.get()) {
-                drained++;
-                continue;
-            }
-            int resultCount = resultStore.append(event.result);
-            Result r = event.result;
-            if (!event.suppressNoisyLogs && (r.tlsPass || r.httpPass || resultCount % 200 == 0)) {
-                appendLog("Result " + r.address() + " sni=" + dash(r.sni) + " tcp=" + r.tcpPass +
-                        " tls=" + r.tlsPass + " http=" + r.httpPass + " q=" + Math.round(r.quality));
-            }
-            drained++;
-        }
-        if (drained > 0) {
-            updateProgress();
-            scheduleRender();
-        }
-        if (!pendingResults.isEmpty()) {
-            scheduleResultDrain();
-        }
-    };
-
-    private void scheduleResultDrain() {
-        if (!resultDrainQueued.compareAndSet(false, true)) return;
-        ui.post(resultDrainRunnable);
+    /** Legacy entry point; drain is service-owned via {@link ScanSessionController}. */
+    void drainPendingResults() {
+        scanSession.requestResultDrain();
     }
 
     private void renderResults() {
@@ -2425,7 +2517,7 @@ public class MainActivity extends Activity {
         long latencySum = 0, best = Long.MAX_VALUE;
         int latencyCount = 0;
         int rawCount;
-        rawCount = resultStore.size();
+        rawCount = scanSession.results().size();
         for (Result r : rows) {
             if (r.working()) working++;
             long latency = r.totalLatency();
@@ -2454,7 +2546,7 @@ public class MainActivity extends Activity {
                 if (old == null || score > old) scores.put(host, score);
             }
         }
-        if (scores.isEmpty()) return "Best host hints: none visible";
+        if (scores.isEmpty()) return "Best host names: none visible";
         ArrayList<Map.Entry<String, Double>> ordered = new ArrayList<>(scores.entrySet());
         ordered.sort((a, b) -> Double.compare(b.getValue(), a.getValue()));
         ArrayList<String> top = new ArrayList<>();
@@ -2462,11 +2554,11 @@ public class MainActivity extends Activity {
             Map.Entry<String, Double> e = ordered.get(i);
             top.add(e.getKey() + " q" + Math.round(e.getValue()));
         }
-        return "Best host hints: " + joinComma(top);
+        return "Best host names: " + joinComma(top);
     }
 
     private static String stableBestPlaceholder() {
-        return "Best result unavailable\nHost hints will appear after TLS or HTTP results.\n ";
+        return "No successful results yet\nCertificate and HTTP host names will appear after TLS or HTTP checks.\n ";
     }
 
     private void renderBestCard(List<Result> snapshot) {
@@ -2476,7 +2568,16 @@ public class MainActivity extends Activity {
             return;
         }
         Result bestVisible = bestVisibleResult(snapshot);
-        String bestLine = bestVisible == null ? "Best result unavailable" : "Best: " + bestVisible.summary();
+        if (bestVisible == null) {
+            Stats s = stats();
+            if (s.rows > 0 && s.tcp == 0 && s.tls == 0 && s.http == 0 && s.timeout >= Math.max(3, s.rows * 8 / 10)) {
+                bestView.setText("No successful results yet\nMost attempts are timing out. Try fewer threads, a longer timeout, a smaller target set, or a different network.\n ");
+            } else {
+                bestView.setText("No successful results visible\nClear filters or show failed attempts to inspect the current scan rows.\n ");
+            }
+            return;
+        }
+        String bestLine = "Best: " + bestVisible.summary();
         bestView.setText(bestLine + "\n" + bestSniLine(snapshot) + "\n ");
     }
 
@@ -2524,11 +2625,11 @@ public class MainActivity extends Activity {
         icon.setGravity(Gravity.CENTER);
         card.addView(icon);
         boolean hasRows;
-        hasRows = !resultStore.isEmpty();
-        card.addView(text(hasRows ? "Filters hid every row" : "No visible edges yet", 16, Color.WHITE, true));
-        card.addView(text(hasRows ? "Loosen provider, score, latency, SNI, certificate, or status filters to reveal existing scan rows." :
-                "Start a scan from Sources. Result cards will stay here; copy and export never replace them.", 12, Color.rgb(205, 226, 238), false));
-        Button cta = button(hasRows ? "Clear filters" : "Open Sources", Color.rgb(22, 54, 72), Color.WHITE);
+        hasRows = !scanSession.results().isEmpty();
+        card.addView(text(hasRows ? "Filters hid every row" : "No visible results yet", 16, Color.WHITE, true));
+        card.addView(text(hasRows ? "Loosen provider, score, latency, host name, certificate, or status filters to reveal existing scan rows." :
+                "Start a scan from Targets. Result cards will stay here; copy and export never replace them.", 12, Color.rgb(205, 226, 238), false));
+        Button cta = button(hasRows ? "Clear filters" : "Open Targets", Color.rgb(22, 54, 72), Color.WHITE);
         cta.setOnClickListener(v -> {
             if (hasRows) clearResultFilters();
             else selectTab(0);
@@ -2543,12 +2644,12 @@ public class MainActivity extends Activity {
         if (filterWorking != null) filterWorking.setChecked(false);
         if (filterTlsHttp != null) filterTlsHttp.setChecked(false);
         if (requireHttp != null) requireHttp.setChecked(false);
-        if (requireKnownCdn != null) requireKnownCdn.setChecked(false);
+        if (requireKnownNetwork != null) requireKnownNetwork.setChecked(false);
         if (requireTls13 != null) requireTls13.setChecked(false);
         if (bestPerIp != null) bestPerIp.setChecked(false);
-        if (cdnProviderSpinner != null) cdnProviderSpinner.setSelection(0);
+        if (networkProviderSpinner != null) networkProviderSpinner.setSelection(0);
         if (maxLatencyInput != null) maxLatencyInput.setText("");
-        if (cdnFilterInput != null) cdnFilterInput.setText("");
+        if (networkFilterInput != null) networkFilterInput.setText("");
         if (certFilterInput != null) certFilterInput.setText("");
         if (sniFilterInput != null) sniFilterInput.setText("");
         if (minQualityInput != null) minQualityInput.setText("");
@@ -2566,7 +2667,7 @@ public class MainActivity extends Activity {
         }
         int total = rows.size(), http = 0, tls = 0, tcp = 0, down = 0;
         int fast = 0, medium = 0, slow = 0, verySlow = 0;
-        Map<String, Integer> cdns = new TreeMap<>();
+        Map<String, Integer> networkGroups = new TreeMap<>();
         for (Result r : rows) {
             if (r.httpPass) http++;
             else if (r.tlsPass) tls++;
@@ -2577,25 +2678,25 @@ public class MainActivity extends Activity {
             else if (latency > 0 && latency < 300) medium++;
             else if (latency > 0 && latency < 700) slow++;
             else if (latency > 0) verySlow++;
-            String cdn = r.cdn == null || r.cdn.trim().isEmpty() ? "UNKNOWN" : r.cdn.toUpperCase(Locale.US);
-            cdns.put(cdn, cdns.containsKey(cdn) ? cdns.get(cdn) + 1 : 1);
+            String network = r.networkClassification == null || r.networkClassification.trim().isEmpty() ? "UNKNOWN" : r.networkClassification.toUpperCase(Locale.US);
+            networkGroups.put(network, networkGroups.containsKey(network) ? networkGroups.get(network) + 1 : 1);
         }
         analyticsPanel.addView(text("Status distribution", 12, highContrastMode() ? Color.WHITE : MUTED, true));
         analyticsPanel.addView(metricBar("HTTP", http, total, Color.rgb(66, 230, 170)));
         analyticsPanel.addView(metricBar("TLS", tls, total, Color.rgb(55, 212, 255)));
         analyticsPanel.addView(metricBar("TCP", tcp, total, Color.rgb(255, 204, 100)));
-        analyticsPanel.addView(metricBar("Down", down, total, Color.rgb(255, 112, 135)));
+        analyticsPanel.addView(metricBar("Failed", down, total, Color.rgb(255, 112, 135)));
         analyticsPanel.addView(text("Latency histogram", 12, highContrastMode() ? Color.WHITE : MUTED, true));
         analyticsPanel.addView(metricBar("<120ms", fast, total, Color.rgb(66, 230, 170)));
         analyticsPanel.addView(metricBar("120-299ms", medium, total, Color.rgb(55, 212, 255)));
         analyticsPanel.addView(metricBar("300-699ms", slow, total, Color.rgb(255, 204, 100)));
         analyticsPanel.addView(metricBar("700ms+", verySlow, total, Color.rgb(255, 112, 135)));
-        analyticsPanel.addView(text("CDN mix", 12, highContrastMode() ? Color.WHITE : MUTED, true));
-        ArrayList<Map.Entry<String, Integer>> groups = new ArrayList<>(cdns.entrySet());
+        analyticsPanel.addView(text("Provider mix", 12, highContrastMode() ? Color.WHITE : MUTED, true));
+        ArrayList<Map.Entry<String, Integer>> groups = new ArrayList<>(networkGroups.entrySet());
         groups.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
         for (int i = 0; i < Math.min(5, groups.size()); i++) {
             Map.Entry<String, Integer> e = groups.get(i);
-            analyticsPanel.addView(metricBar(e.getKey(), e.getValue(), total, cdnColor(e.getKey())));
+            analyticsPanel.addView(metricBar(e.getKey(), e.getValue(), total, networkClassificationColor(e.getKey())));
         }
         analyticsPanel.addView(text("Provider health", 12, highContrastMode() ? Color.WHITE : MUTED, true));
         for (ProviderHealth h : providerHealth(rows)) {
@@ -2606,11 +2707,11 @@ public class MainActivity extends Activity {
     private List<ProviderHealth> providerHealth(List<Result> rows) {
         Map<String, ProviderHealth> map = new TreeMap<>();
         for (Result r : rows) {
-            String cdn = r.cdn == null || r.cdn.trim().isEmpty() ? "UNKNOWN" : r.cdn.toUpperCase(Locale.US);
-            ProviderHealth h = map.get(cdn);
+            String network = r.networkClassification == null || r.networkClassification.trim().isEmpty() ? "UNKNOWN" : r.networkClassification.toUpperCase(Locale.US);
+            ProviderHealth h = map.get(network);
             if (h == null) {
-                h = new ProviderHealth(cdn);
-                map.put(cdn, h);
+                h = new ProviderHealth(network);
+                map.put(network, h);
             }
             h.total++;
             if (r.working()) h.working++;
@@ -2644,8 +2745,8 @@ public class MainActivity extends Activity {
         return box;
     }
 
-    private int cdnColor(String cdn) {
-        String c = cdn == null ? "" : cdn.toLowerCase(Locale.US);
+    private int networkClassificationColor(String classification) {
+        String c = classification == null ? "" : classification.toLowerCase(Locale.US);
         if (c.contains("cloudflare")) return Color.rgb(255, 156, 67);
         if (c.contains("fastly")) return Color.rgb(226, 74, 94);
         if (c.contains("akamai")) return Color.rgb(54, 166, 255);
@@ -2705,28 +2806,28 @@ public class MainActivity extends Activity {
         boolean fWorking = filterWorking.isChecked();
         boolean fTlsHttp = filterTlsHttp.isChecked();
         boolean rHttp = requireHttp.isChecked();
-        boolean rKnownCdn = requireKnownCdn.isChecked();
+        boolean requireKnownClassification = requireKnownNetwork.isChecked();
         boolean rTls13 = requireTls13.isChecked();
         boolean bPerIp = bestPerIp.isChecked();
         int maxLatency = intValue(maxLatencyInput, 0);
         int minQuality = intValue(minQualityInput, 0);
-        String cdnPreset = cdnProviderSpinner == null || cdnProviderSpinner.getSelectedItem() == null ? "Any provider" : cdnProviderSpinner.getSelectedItem().toString();
-        String cdn = cdnFilterInput == null ? "" : cdnFilterInput.getText().toString().trim().toLowerCase(Locale.US);
+        String networkPreset = networkProviderSpinner == null || networkProviderSpinner.getSelectedItem() == null ? "Any provider" : networkProviderSpinner.getSelectedItem().toString();
+        String networkText = networkFilterInput == null ? "" : networkFilterInput.getText().toString().trim().toLowerCase(Locale.US);
         String cert = certFilterInput == null ? "" : certFilterInput.getText().toString().trim().toLowerCase(Locale.US);
         String sni = sniFilterInput == null ? "" : sniFilterInput.getText().toString().trim().toLowerCase(Locale.US);
         int sort = sortSpinner.getSelectedItemPosition();
 
         List<Result> snapshot = new ArrayList<>();
-        for (Result r : resultStore.snapshot()) {
+        for (Result r : scanSession.results().snapshot()) {
                 if (fWorking && !r.working()) continue;
                 if (fTlsHttp && !(r.tlsPass || r.httpPass)) continue;
                 if (rHttp && !r.httpPass) continue;
-                if (rKnownCdn && "UNKNOWN".equalsIgnoreCase(r.cdn)) continue;
-                if (!providerMatches(cdnPreset, r.cdn)) continue;
+                if (requireKnownClassification && "UNKNOWN".equalsIgnoreCase(r.networkClassification)) continue;
+                if (!providerMatches(networkPreset, r.networkClassification)) continue;
                 if (rTls13 && !r.tlsVersion.contains("1.3")) continue;
                 if (maxLatency > 0 && (r.totalLatency() <= 0 || r.totalLatency() > maxLatency)) continue;
                 if (minQuality > 0 && r.quality < minQuality) continue;
-                if (!cdn.isEmpty() && !r.cdn.toLowerCase(Locale.US).contains(cdn)) continue;
+                if (!networkText.isEmpty() && !r.networkClassification.toLowerCase(Locale.US).contains(networkText)) continue;
                 if (!sni.isEmpty() && !hostHintText(r).contains(sni)) continue;
                 if (!cert.isEmpty() && !r.tlsCert.toLowerCase(Locale.US).contains(cert)) continue;
                 snapshot.add(r);
@@ -2742,7 +2843,7 @@ public class MainActivity extends Activity {
         }
         if (sort == 1) snapshot.sort(Comparator.comparingLong(r -> r.totalLatency() > 0 ? r.totalLatency() : Long.MAX_VALUE));
         else if (sort == 2) snapshot.sort((a, b) -> Double.compare(b.quality, a.quality));
-        else if (sort == 3) snapshot.sort(Comparator.comparing((Result r) -> r.cdn).thenComparing((a, b) -> Double.compare(b.quality, a.quality)));
+        else if (sort == 3) snapshot.sort(Comparator.comparing((Result r) -> r.networkClassification).thenComparing((a, b) -> Double.compare(b.quality, a.quality)));
         else if (sort == 4) snapshot.sort(Comparator.comparing(this::primaryHostHint));
         else if (sort == 5) snapshot.sort((a, b) -> Boolean.compare(b.httpPass, a.httpPass) != 0 ? Boolean.compare(b.httpPass, a.httpPass) : Double.compare(b.quality, a.quality));
         else if (sort == 6) snapshot.sort((a, b) -> Boolean.compare(b.tlsPass, a.tlsPass) != 0 ? Boolean.compare(b.tlsPass, a.tlsPass) : Double.compare(b.quality, a.quality));
@@ -2752,35 +2853,35 @@ public class MainActivity extends Activity {
 
     private boolean providerMatches(String preset, String provider) {
         String choice = preset == null ? "" : preset.toLowerCase(Locale.US);
-        String cdn = provider == null ? "" : provider.toLowerCase(Locale.US);
+        String classification = provider == null ? "" : provider.toLowerCase(Locale.US);
         if (choice.isEmpty() || choice.startsWith("any")) return true;
-        if (choice.startsWith("known")) return !cdn.isEmpty() && !"unknown".equals(cdn);
-        if (choice.startsWith("unknown")) return cdn.isEmpty() || "unknown".equals(cdn);
-        if (choice.contains("cloudfront") || choice.contains("aws")) return cdn.contains("cloudfront") || cdn.contains("aws") || cdn.contains("amazon");
-        if (choice.contains("cloudflare")) return cdn.contains("cloudflare");
-        if (choice.contains("akamai")) return cdn.contains("akamai");
-        if (choice.contains("fastly")) return cdn.contains("fastly");
-        if (choice.contains("github")) return cdn.contains("github");
-        if (choice.contains("google")) return cdn.contains("google") || cdn.contains("gcp");
-        if (choice.contains("azure")) return cdn.contains("azure") || cdn.contains("microsoft");
-        if (choice.contains("bunny")) return cdn.contains("bunny");
-        return cdn.contains(choice);
+        if (choice.startsWith("known")) return !classification.isEmpty() && !"unknown".equals(classification);
+        if (choice.startsWith("unknown")) return classification.isEmpty() || "unknown".equals(classification);
+        if (choice.contains("cloudfront") || choice.contains("aws")) return classification.contains("cloudfront") || classification.contains("aws") || classification.contains("amazon");
+        if (choice.contains("cloudflare")) return classification.contains("cloudflare");
+        if (choice.contains("akamai")) return classification.contains("akamai");
+        if (choice.contains("fastly")) return classification.contains("fastly");
+        if (choice.contains("github")) return classification.contains("github");
+        if (choice.contains("google")) return classification.contains("google") || classification.contains("gcp");
+        if (choice.contains("azure")) return classification.contains("azure") || classification.contains("microsoft");
+        if (choice.contains("bunny")) return classification.contains("bunny");
+        return classification.contains(choice);
     }
 
     private String filterSummary() {
         ArrayList<String> active = new ArrayList<>();
-        if (filterWorking != null && filterWorking.isChecked()) active.add("working");
-        if (filterTlsHttp != null && filterTlsHttp.isChecked()) active.add("TLS/HTTP");
+        if (filterWorking != null && filterWorking.isChecked()) active.add("successful");
+        if (filterTlsHttp != null && filterTlsHttp.isChecked()) active.add("TLS or HTTP");
         if (requireHttp != null && requireHttp.isChecked()) active.add("HTTP");
-        if (requireKnownCdn != null && requireKnownCdn.isChecked()) active.add("known CDN");
+        if (requireKnownNetwork != null && requireKnownNetwork.isChecked()) active.add("known network");
         if (requireTls13 != null && requireTls13.isChecked()) active.add("TLS 1.3");
         if (bestPerIp != null && bestPerIp.isChecked()) active.add("best/IP");
-        if (cdnProviderSpinner != null && cdnProviderSpinner.getSelectedItemPosition() > 0) active.add(String.valueOf(cdnProviderSpinner.getSelectedItem()));
+        if (networkProviderSpinner != null && networkProviderSpinner.getSelectedItemPosition() > 0) active.add(String.valueOf(networkProviderSpinner.getSelectedItem()));
         if (maxLatencyInput != null && !maxLatencyInput.getText().toString().trim().isEmpty()) active.add("latency");
         if (minQualityInput != null && !minQualityInput.getText().toString().trim().isEmpty()) active.add("score");
-        if (cdnFilterInput != null && !cdnFilterInput.getText().toString().trim().isEmpty()) active.add("CDN text");
+        if (networkFilterInput != null && !networkFilterInput.getText().toString().trim().isEmpty()) active.add("network text");
         if (certFilterInput != null && !certFilterInput.getText().toString().trim().isEmpty()) active.add("cert");
-        if (sniFilterInput != null && !sniFilterInput.getText().toString().trim().isEmpty()) active.add("host hint");
+        if (sniFilterInput != null && !sniFilterInput.getText().toString().trim().isEmpty()) active.add("host name");
         return active.isEmpty() ? "none" : joinHuman(active);
     }
 
@@ -2795,16 +2896,16 @@ public class MainActivity extends Activity {
         card.setLayoutParams(lp);
         TextView top = text(r.address(), compactMode() ? 13 : 15, Color.WHITE, true);
         formatMonospace(top, compactMode() ? 13 : 15);
-        TextView route = text("Host hint " + dash(r.sni), compactMode() ? 11 : 12, highContrastMode() ? Color.WHITE : Color.rgb(190, 218, 232), false);
+        TextView route = text("Observed host " + dash(r.sni), compactMode() ? 11 : 12, highContrastMode() ? Color.WHITE : Color.rgb(190, 218, 232), false);
         route.setSingleLine(false);
         LinearLayout signal = row();
         signal.setGravity(Gravity.START);
         signal.addView(statusDot("TCP", r.tcpPass, Color.rgb(54, 166, 255)), smallChipLp());
         signal.addView(statusDot("TLS", r.tlsPass, Color.rgb(66, 230, 170)), smallChipLp());
         signal.addView(statusDot("HTTP", r.httpPass, Color.rgb(255, 204, 100)), smallChipLp());
-        signal.addView(statusDot(r.cdn, !"UNKNOWN".equalsIgnoreCase(r.cdn), BLUE), smallChipLp());
+        signal.addView(statusDot(r.networkClassification, !"UNKNOWN".equalsIgnoreCase(r.networkClassification), BLUE), smallChipLp());
         TextView body = text(latencySparkline(r) + "  " + r.totalLatency() + "ms | HTTP " + r.httpStatus +
-                " | Q " + Math.round(r.quality), 12, Color.WHITE, false);
+                " | Score " + Math.round(r.quality), 12, Color.WHITE, false);
         formatMonospace(body, 12);
         card.addView(top);
         card.addView(route);
@@ -2854,7 +2955,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         try {
             if (format == 3) {
-                sb.append("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,cdn,quality,reason\n");
+                sb.append("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,network_classification,quality,reason\n");
             } else if (format == 4) {
                 JSONArray arr = new JSONArray();
                 for (Result r : rows) arr.put(r.json());
@@ -2883,7 +2984,7 @@ public class MainActivity extends Activity {
     private void copyVisibleCsv() {
         List<Result> rows = filteredResults();
         StringBuilder sb = new StringBuilder();
-        sb.append("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,cdn,quality,reason\n");
+        sb.append("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,network_classification,quality,reason\n");
         for (Result r : rows) sb.append(r.csv()).append('\n');
         copyToClipboardOrDialog("visible CSV", sb.toString());
     }
@@ -2928,193 +3029,13 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    private void exportJson() {
-        try {
-            List<Result> rows = exportRowsForFile();
-            String redactionMode = exportRedactionMode();
-            int format = fileExportSpinner == null ? 0 : fileExportSpinner.getSelectedItemPosition();
-            String base = "maybescanner_export_" + System.currentTimeMillis();
-            String extension = format == 0 ? ".jsonl" : format == 1 ? ".csv" : format == 2 ? ".md" : ".xml";
-            File out = new File(getExternalFilesDir(null), base + extension);
-            JSONObject meta = buildExportMeta(formatLabelForFileExport(format), redactionMode, rows.size());
-            try (BufferedWriter w = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(out), StandardCharsets.UTF_8))) {
-                if (format == 0) {
-                    JSONObject metaLine = new JSONObject(meta.toString());
-                    metaLine.put("record_type", "export_meta");
-                    w.write(metaLine.toString());
-                    w.newLine();
-                    for (Result row : rows) {
-                        JSONObject item = exportResultJson(row, redactionMode);
-                        item.put("record_type", "scan_result");
-                        w.write(item.toString());
-                        w.newLine();
-                    }
-                } else if (format == 1) {
-                    w.write("# schema_version: " + meta.optInt("schema_version"));
-                    w.newLine();
-                    w.write("# app_version: " + meta.optString("app_version"));
-                    w.newLine();
-                    w.write("# scan_session_id: " + meta.optString("scan_session_id"));
-                    w.newLine();
-                    w.write("# product_mode: " + meta.optString("product_mode"));
-                    w.newLine();
-                    w.write("# redaction_mode: " + meta.optString("redaction_mode"));
-                    w.newLine();
-                    w.write("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,cdn,quality,reason");
-                    w.newLine();
-                    for (Result row : rows) {
-                        JSONObject item = exportResultJson(row, redactionMode);
-                        w.write(csvCell(item.optString("target")) + "," + csvCell(item.optString("ip")) + "," + item.optInt("port") + "," +
-                                csvCell(item.optString("sni")) + "," + item.optBoolean("tcpPass") + "," + item.optBoolean("tlsPass") + "," +
-                                item.optBoolean("httpPass") + "," + item.optInt("httpStatus") + "," + item.optLong("totalLatencyMs") + "," +
-                                csvCell(item.optString("alpn")) + "," + csvCell(item.optString("tlsProfile")) + "," + item.optBoolean("http3Hint") + "," +
-                                csvCell(item.optString("cdn")) + "," + item.optLong("qualityRounded") + "," + csvCell(item.optString("reason")));
-                        w.newLine();
-                    }
-                } else if (format == 2) {
-                    w.write("# MaybeScanner Report");
-                    w.newLine();
-                    w.newLine();
-                    w.write("- schema_version: " + meta.optInt("schema_version"));
-                    w.newLine();
-                    w.write("- app_version: " + meta.optString("app_version"));
-                    w.newLine();
-                    w.write("- scan_session_id: " + meta.optString("scan_session_id"));
-                    w.newLine();
-                    w.write("- product_mode: " + meta.optString("product_mode"));
-                    w.newLine();
-                    w.write("- redaction_mode: " + meta.optString("redaction_mode"));
-                    w.newLine();
-                    w.write("- result_count: " + meta.optInt("result_count"));
-                    w.newLine();
-                    w.newLine();
-                    w.write("| target | ip | sni | tcp/tls/http | cdn | ms |");
-                    w.newLine();
-                    w.write("| --- | --- | --- | --- | --- | --- |");
-                    w.newLine();
-                    for (Result row : rows) {
-                        JSONObject item = exportResultJson(row, redactionMode);
-                        String checks = (item.optBoolean("tcpPass") ? "T" : "-") + "/" + (item.optBoolean("tlsPass") ? "L" : "-") + "/" + (item.optBoolean("httpPass") ? "H" : "-");
-                        w.write("| " + safeMd(item.optString("target")) + " | " + safeMd(item.optString("ip")) + " | " + safeMd(item.optString("sni")) + " | " + checks + " | " + safeMd(item.optString("cdn")) + " | " + item.optLong("totalLatencyMs") + " |");
-                        w.newLine();
-                    }
-                } else {
-                    w.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-                    w.newLine();
-                    w.write("<nmaprun scanner=\"MaybeScanner\" args=\"ip-first scan export\" product_mode=\"" + xmlEscape(meta.optString("product_mode")) + "\" redaction_mode=\"" + xmlEscape(meta.optString("redaction_mode")) + "\" scan_session_id=\"" + xmlEscape(meta.optString("scan_session_id")) + "\">");
-                    w.newLine();
-                    for (Result row : rows) {
-                        JSONObject item = exportResultJson(row, redactionMode);
-                        String ip = item.optString("ip");
-                        int port = item.optInt("port");
-                        if (ip.isEmpty() || port <= 0) continue;
-                        String state = (item.optBoolean("tcpPass") || item.optBoolean("tlsPass") || item.optBoolean("httpPass")) ? "open" : "closed";
-                        String addrType = ip.contains(":") ? "ipv6" : "ipv4";
-                        w.write("<host><status state=\"up\"/><address addr=\"" + xmlEscape(ip) + "\" addrtype=\"" + addrType + "\"/><ports><port protocol=\"tcp\" portid=\"" + port + "\"><state state=\"" + state + "\"/><service name=\"" + xmlEscape(item.optString("sni")) + "\" product=\"" + xmlEscape(item.optString("cdn")) + "\"/></port></ports></host>");
-                        w.newLine();
-                    }
-                    w.write("</nmaprun>");
-                    w.newLine();
-                }
-            }
-            toast("Exported: " + out.getAbsolutePath());
-        } catch (Exception e) {
-            toast("Export failed: " + e.getMessage());
-        }
-    }
-
-    private List<Result> exportRowsForFile() {
-        return new ArrayList<>(resultStore.snapshot());
-    }
-
-    private String exportRedactionMode() {
-        return exportPrivacyMode != null && exportPrivacyMode.isChecked() ? "privacy" : "none";
-    }
-
-    private String formatLabelForFileExport(int format) {
-        if (format == 1) return "csv";
-        if (format == 2) return "markdown_report";
-        if (format == 3) return "nmap_xml_like";
-        return "jsonl";
-    }
-
-    private JSONObject buildExportMeta(String format, String redactionMode, int resultCount) throws Exception {
-        JSONObject meta = new JSONObject();
-        meta.put("schema_version", 1);
-        meta.put("app_version", appVersionName());
-        meta.put("scan_session_id", resultStore.sessionId());
-        meta.put("product_mode", "ip_first");
-        meta.put("format", format);
-        meta.put("redaction_mode", redactionMode);
-        meta.put("result_count", resultCount);
-        meta.put("generated_at_ms", System.currentTimeMillis());
-        meta.put("scan_started_at_ms", scanStartedAt);
-        return meta;
-    }
-
-    private String appVersionName() {
-        try {
-            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-        } catch (Exception e) {
-            return "unknown";
-        }
-    }
-
-    private JSONObject exportResultJson(Result row, String redactionMode) throws Exception {
-        JSONObject item = row.json();
-        item.put("totalLatencyMs", row.totalLatency());
-        item.put("qualityRounded", Math.round(row.quality));
-        item.put("redaction_mode", redactionMode);
-        if ("privacy".equals(redactionMode)) {
-            item.put("ip", redactIp(item.optString("ip")));
-            item.put("tlsCert", "[REDACTED]");
-            item.put("certFingerprint", "[REDACTED]");
-        }
-        return item;
-    }
-
-    private String redactIp(String ip) {
-        if (ip == null || ip.isEmpty()) return ip;
-        if (ip.contains(".")) {
-            String[] parts = ip.split("\\.");
-            if (parts.length == 4) return parts[0] + "." + parts[1] + "." + parts[2] + ".x";
-        }
-        if (ip.contains(":")) {
-            int idx = ip.indexOf("::");
-            if (idx >= 0) return ip.substring(0, idx + 2) + "xxxx";
-            String[] parts = ip.split(":");
-            if (parts.length > 2) return parts[0] + ":" + parts[1] + ":xxxx::";
-        }
-        return "[REDACTED]";
-    }
-
-    private static String csvCell(String value) {
-        if (value == null) value = "";
-        return "\"" + value.replace("\"", "\"\"") + "\"";
-    }
-
-    private static String safeMd(String value) {
-        if (value == null) return "";
-        return value.replace("|", "\\|").replace("\n", " ");
-    }
-
-    private static String xmlEscape(String value) {
-        if (value == null) return "";
-        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&apos;");
-    }
-
     private void clearResults() {
-        stop.set(true);
-        ScanForegroundService.stop(this, "Scan cleared");
-        resultStore.clear();
-        pendingResults.clear();
-        resultDrainQueued.set(false);
+        ScanCommandBus.submit(this, ScanCommand.clearSession("activity_ui"));
+    }
+
+    void resetResultsUiAfterClear() {
         ui.removeCallbacks(progressRunnable);
         progressQueued.set(false);
-        resultSequence.set(0);
-        scanGeneration.incrementAndGet();
-        checkedTargets.set(0);
-        totalTargets = 0;
         stableHistoryRenderedAt = 0;
         progress.setProgress(0);
         resultSummaryContainer.removeAllViews();
@@ -3134,17 +3055,18 @@ public class MainActivity extends Activity {
         logView.setText("");
         lastRenderedLogText = "";
         logRenderedAt = 0;
-        metrics.setText("0 / 0 | TCP 0 | TLS 0 | HTTP 0 | Q 0");
-        countersView.setText("Down 0 | timeout 0 | reset 0 | cert 0 | DNS 0 | " + resourceLine());
+        metrics.setText("No scan yet | TCP 0 | TLS 0 | HTTP 0 | Score 0");
+        countersView.setText("Failed 0 | timed out 0 | reset 0 | cert 0 | DNS 0 | " + resourceLine());
         renderBestCard(Collections.emptyList());
         renderStableHistoryPanel();
+        refreshActionButtons();
     }
 
     private void saveLocalObservationHistory() {
         try {
             JSONObject root = new JSONObject(getSharedPreferences("maybescanner", MODE_PRIVATE).getString("stable_history_v1", "{}"));
             LinkedHashSet<String> seenThisRun = new LinkedHashSet<>();
-            for (Result r : resultStore.snapshot()) if (r.working() && r.ip != null && !r.ip.isEmpty()) seenThisRun.add(r.ip + ":" + r.port);
+            for (Result r : scanSession.results().snapshot()) if (r.working() && r.ip != null && !r.ip.isEmpty()) seenThisRun.add(r.ip + ":" + r.port);
             for (String key : seenThisRun) root.put(key, root.optInt(key, 0) + 1);
             getSharedPreferences("maybescanner", MODE_PRIVATE).edit().putString("stable_history_v1", root.toString()).apply();
             stableHistoryRenderedAt = 0;
@@ -3183,7 +3105,7 @@ public class MainActivity extends Activity {
 
     private Stats stats() {
         Stats s = new Stats();
-        List<Result> snapshot = resultStore.snapshot();
+        List<Result> snapshot = scanSession.results().snapshot();
         s.rows = snapshot.size();
         for (Result r : snapshot) {
                 if (r.tcpPass) s.tcp++;
@@ -3206,18 +3128,6 @@ public class MainActivity extends Activity {
         Result best;
     }
 
-    private static class ResultEvent {
-        final Result result;
-        final boolean suppressNoisyLogs;
-        final long generation;
-
-        ResultEvent(Result result, boolean suppressNoisyLogs, long generation) {
-            this.result = result;
-            this.suppressNoisyLogs = suppressNoisyLogs;
-            this.generation = generation;
-        }
-    }
-
     private static class ProviderHealth {
         final String name;
         int total, working, timeout, reset, latencyCount;
@@ -3231,7 +3141,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private static class Result implements java.io.Serializable {
+    static class Result implements java.io.Serializable {
         private static final long serialVersionUID = 1L;
         final String target, ip, sni;
         final int port;
@@ -3239,7 +3149,7 @@ public class MainActivity extends Activity {
         boolean tcpPass, tlsPass, httpPass;
         long tcpLatencyMs, tlsLatencyMs, httpLatencyMs;
         int httpStatus;
-        String tlsVersion = "", tlsCipher = "", tlsCert = "", certFingerprint = "", alpn = "", tlsProfile = "", altSvc = "", reason = "", cdn = "UNKNOWN";
+        String tlsVersion = "", tlsCipher = "", tlsCert = "", certFingerprint = "", alpn = "", tlsProfile = "", altSvc = "", reason = "", networkClassification = "UNKNOWN";
         boolean http3Hint;
         double quality;
 
@@ -3323,19 +3233,19 @@ public class MainActivity extends Activity {
             } catch (Exception e) { reason = classify(e); }
         }
         Result finish() {
-            cdn = detectCdn(ip, sni, tlsCert);
+            networkClassification = detectNetworkClassification(ip, sni, tlsCert);
             double stage = (tcpPass ? 25 : 0) + (tlsPass ? 35 : 0) + (httpPass ? 25 : 0);
             long latency = totalLatency();
             double latencyScore = latency > 0 ? 10000.0 / (latency + 100.0) : 0;
             quality = stage + latencyScore * 0.25 + (tlsVersion.contains("1.3") ? 8 : 0) +
                     ("h2".equalsIgnoreCase(alpn) ? 5 : 0) + (http3Hint ? 4 : 0) +
-                    (!certFingerprint.isEmpty() ? 8 : 0) + (cdn.equals("UNKNOWN") ? 0 : 6) - (reason.isEmpty() ? 0 : 7);
+                    (!certFingerprint.isEmpty() ? 8 : 0) + (networkClassification.equals("UNKNOWN") ? 0 : 6) - (reason.isEmpty() ? 0 : 7);
             return this;
         }
         boolean working() { return tcpPass || tlsPass || httpPass; }
         String address() { return ip == null || ip.isEmpty() ? target : ip + ":" + port; }
         long totalLatency() { return (tcpPass ? tcpLatencyMs : 0) + (tlsPass ? tlsLatencyMs : 0) + (httpPass ? httpLatencyMs : 0); }
-        String summary() { return address() + " " + sni + " " + cdn + " q=" + Math.round(quality) + " " + totalLatency() + "ms"; }
+        String summary() { return address() + " " + sni + " " + networkClassification + " q=" + Math.round(quality) + " " + totalLatency() + "ms"; }
         JSONObject json() throws Exception {
             JSONObject o = new JSONObject();
             o.put("target", target); o.put("ip", ip); o.put("port", port); o.put("sni", sni);
@@ -3343,12 +3253,12 @@ public class MainActivity extends Activity {
             o.put("tcpLatencyMs", tcpLatencyMs); o.put("tlsLatencyMs", tlsLatencyMs); o.put("httpLatencyMs", httpLatencyMs);
             o.put("httpStatus", httpStatus); o.put("tlsVersion", tlsVersion); o.put("tlsCipher", tlsCipher);
             o.put("alpn", alpn); o.put("tlsProfile", tlsProfile); o.put("altSvc", altSvc); o.put("http3Hint", http3Hint);
-            o.put("tlsCert", tlsCert); o.put("certFingerprint", certFingerprint); o.put("cdn", cdn);
+            o.put("tlsCert", tlsCert); o.put("certFingerprint", certFingerprint); o.put("network_classification", networkClassification);
             o.put("quality", quality); o.put("reason", reason); return o;
         }
         String csv() {
             return q(target)+","+q(ip)+","+port+","+q(sni)+","+tcpPass+","+tlsPass+","+httpPass+","+httpStatus+","+
-                    totalLatency()+","+q(alpn)+","+q(tlsProfile)+","+http3Hint+","+q(cdn)+","+Math.round(quality)+","+q(reason);
+                    totalLatency()+","+q(alpn)+","+q(tlsProfile)+","+http3Hint+","+q(networkClassification)+","+Math.round(quality)+","+q(reason);
         }
         String probeHost() {
             String host = sni == null ? "" : sni.trim();
@@ -3514,7 +3424,7 @@ public class MainActivity extends Activity {
         if (m.contains("cert") || m.contains("trust") || m.contains("handshake")) return "cert_or_tls";
         return e.getClass().getSimpleName();
     }
-    private static String detectCdn(String ip, String sni, String cert) {
+    private static String detectNetworkClassification(String ip, String sni, String cert) {
         String hay = (sni + " " + cert).toLowerCase(Locale.US);
         if (hay.contains("cloudflare") || inCidrV4(ip, "104.16.0.0", 12) || inCidrV4(ip, "172.64.0.0", 13)) return "CLOUDFLARE";
         if (hay.contains("fastly") || inCidrV4(ip, "151.101.0.0", 16)) return "FASTLY";
@@ -3542,7 +3452,7 @@ public class MainActivity extends Activity {
     private static String trim(String s, int n) { return s.length() <= n ? s : s.substring(0, n - 1) + "..."; }
     private static String dash(String s) { return s == null || s.isEmpty() ? "--" : s; }
     private static String cleanToken(String s) { return ScanTargetPlanner.cleanToken(s); }
-    private String elapsed() { long s = Math.max(0, (System.currentTimeMillis() - scanStartedAt) / 1000); return s + "s"; }
+    private String elapsed() { long s = Math.max(0, (System.currentTimeMillis() - scanSession.scanStartedAt()) / 1000); return s + "s"; }
     private void clip(String s) { ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("MaybeScanner", s)); }
     private String resourceLine() {
         long now = System.currentTimeMillis();
@@ -3574,19 +3484,21 @@ public class MainActivity extends Activity {
         return model + " | Android " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT + " | " + abi;
     }
     private void appendLog(String s) {
-        ui.post(() -> {
-            String line = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + s;
-            synchronized (logLines) {
-                logLines.addLast(line);
-                if (logLines.size() > 250) {
-                    logLines.removeFirst();
-                    rebuildStableLogBuilder();
-                } else {
-                    stableLogBuilder.append(line).append('\n');
-                }
+        scanSession.runOnUi(activity -> activity.appendLogOnUi(s));
+    }
+
+    void appendLogOnUi(String s) {
+        String line = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + s;
+        synchronized (logLines) {
+            logLines.addLast(line);
+            if (logLines.size() > 250) {
+                logLines.removeFirst();
+                rebuildStableLogBuilder();
+            } else {
+                stableLogBuilder.append(line).append('\n');
             }
-            refreshLogView();
-        });
+        }
+        refreshLogView();
     }
     private void refreshLogView() {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -3749,27 +3661,23 @@ public class MainActivity extends Activity {
             }
 
             sb.append("[6] Local sidecar state:\n");
-            try {
-                JSONObject heartbeat = fetchJson("http://127.0.0.1:10808/api/heartbeat", 1200);
-                sb.append(" - heartbeat version=").append(heartbeat.optInt("version"))
-                        .append(" state=").append(heartbeat.optString("state", "unknown"))
-                        .append(" uptime_ms=").append(heartbeat.optLong("uptime_ms")).append('\n');
-                String licenseId = heartbeat.optString("license_id", "");
-                if (!licenseId.isEmpty()) {
-                    sb.append(" - sidecar license=").append(licenseId).append('\n');
-                }
-                String sourceOffer = heartbeat.optString("source_offer_url", "");
-                if (!sourceOffer.isEmpty()) {
-                    sb.append(" - source offer=").append(sourceOffer).append('\n');
-                }
-            } catch (Exception e) {
-                sb.append(" - heartbeat unavailable: ").append(e.getMessage()).append('\n');
+            SidecarController.SidecarSnapshot sidecar = SidecarController.get().refreshHeartbeat(1200);
+            if (sidecar.reachable) {
+                sb.append(" - heartbeat version=").append(sidecar.version)
+                        .append(" state=").append(sidecar.state)
+                        .append(" uptime_ms=").append(sidecar.uptimeMs).append('\n');
+            } else {
+                sb.append(" - heartbeat unavailable: ").append(sidecar.detail).append('\n');
             }
             try {
-                JSONObject corpus = fetchJson("http://127.0.0.1:10808/api/provider-corpus", 1200);
-                sb.append(" - provider corpus id=").append(corpus.optString("corpus_id", "unknown"))
-                        .append(" stale=").append(corpus.optBoolean("stale", false))
-                        .append(" stale_after=").append(corpus.optString("stale_after", "unknown")).append('\n');
+                org.json.JSONObject corpus = SidecarController.get().fetchProviderCorpusJson(1200);
+                if (corpus != null) {
+                    sb.append(" - provider corpus id=").append(corpus.optString("corpus_id", "unknown"))
+                            .append(" stale=").append(corpus.optBoolean("stale", false))
+                            .append(" stale_after=").append(corpus.optString("stale_after", "unknown")).append('\n');
+                } else {
+                    sb.append(" - provider corpus status unavailable\n");
+                }
             } catch (Exception e) {
                 sb.append(" - provider corpus status unavailable: ").append(e.getMessage()).append('\n');
             }
@@ -3831,7 +3739,7 @@ public class MainActivity extends Activity {
         }
     }
     private void rebuildStableLogBuilder() { stableLogBuilder.setLength(0); for (String x : logLines) stableLogBuilder.append(x).append('\n'); }
-    private int intValue(EditText e, int defaultValue) { try { String s = e.getText().toString().trim(); return s.isEmpty() ? defaultValue : Integer.parseInt(s); } catch (Exception ex) { return defaultValue; } }
+    private int intValue(EditText e, int defaultValue) { try { if (e == null) return defaultValue; String s = e.getText().toString().trim(); return s.isEmpty() ? defaultValue : Integer.parseInt(s); } catch (Exception ex) { return defaultValue; } }
     private static int clampInt(int value, int min, int max) { return Math.max(min, Math.min(max, value)); }
     private LinearLayout column() { return ScannerUiKit.column(this); }
     private LinearLayout row() { return ScannerUiKit.row(this); }
@@ -4885,7 +4793,7 @@ public class MainActivity extends Activity {
             final TextView tcpChip;
             final TextView tlsChip;
             final TextView httpChip;
-            final TextView cdnChip;
+            final TextView networkChip;
             final TextView body;
             final TextView tlsLine;
             final TextView http3Line;
@@ -4901,7 +4809,7 @@ public class MainActivity extends Activity {
                 tcpChip = (TextView) signal.getChildAt(0);
                 tlsChip = (TextView) signal.getChildAt(1);
                 httpChip = (TextView) signal.getChildAt(2);
-                cdnChip = (TextView) signal.getChildAt(3);
+                networkChip = (TextView) signal.getChildAt(3);
                 body = (TextView) card.getChildAt(3);
                 tlsLine = (TextView) card.getChildAt(4);
                 http3Line = (TextView) card.getChildAt(5);
@@ -4914,14 +4822,14 @@ public class MainActivity extends Activity {
                 card.setBackground(glassBg(resultFillColor(r), r.working() ? Color.argb(145, 55, 212, 255) : Color.argb(95, 255, 255, 255)));
                 top.setText(r.address());
                 top.setTextSize(TypedValue.COMPLEX_UNIT_SP, compactMode() ? 13 : 15);
-                route.setText("Host hint " + dash(r.sni));
+                route.setText("Observed host " + dash(r.sni));
                 route.setTextSize(TypedValue.COMPLEX_UNIT_SP, compactMode() ? 11 : 12);
                 route.setTextColor(highContrastMode() ? Color.WHITE : Color.rgb(190, 218, 232));
                 bindStatusChip(tcpChip, "TCP", r.tcpPass, Color.rgb(54, 166, 255));
                 bindStatusChip(tlsChip, "TLS", r.tlsPass, Color.rgb(66, 230, 170));
                 bindStatusChip(httpChip, "HTTP", r.httpPass, Color.rgb(255, 204, 100));
-                bindStatusChip(cdnChip, r.cdn, !"UNKNOWN".equalsIgnoreCase(r.cdn), BLUE);
-                body.setText(latencySparkline(r) + "  " + r.totalLatency() + "ms | HTTP " + r.httpStatus + " | Q " + Math.round(r.quality));
+                bindStatusChip(networkChip, r.networkClassification, !"UNKNOWN".equalsIgnoreCase(r.networkClassification), BLUE);
+                body.setText(latencySparkline(r) + "  " + r.totalLatency() + "ms | HTTP " + r.httpStatus + " | Score " + Math.round(r.quality));
                 bindOptionalLine(tlsLine, !compactMode() && !r.tlsVersion.isEmpty(), r.tlsVersion + " | " + r.tlsCipher + " | ALPN " + dash(r.alpn) + " | TLS " + dash(r.tlsProfile), highContrastMode() ? Color.WHITE : MUTED);
                 bindOptionalLine(http3Line, !compactMode() && r.http3Hint, "HTTP/3 advertised via Alt-Svc: " + trim(r.altSvc, 120), Color.rgb(150, 232, 255));
                 bindOptionalLine(certLine, !compactMode() && !r.tlsCert.isEmpty(), trim(r.tlsCert, 120), highContrastMode() ? Color.WHITE : MUTED);
@@ -4995,7 +4903,7 @@ public class MainActivity extends Activity {
                 r.tcpLatencyMs + "|" + r.tlsLatencyMs + "|" + r.httpLatencyMs + "|" +
                 r.tlsVersion + "|" + r.tlsCipher + "|" + r.tlsCert + "|" + r.certFingerprint + "|" +
                 r.alpn + "|" + r.tlsProfile + "|" + r.altSvc + "|" + r.http3Hint + "|" +
-                r.reason + "|" + r.cdn + "|" + Math.round(r.quality * 100.0);
+                r.reason + "|" + r.networkClassification + "|" + Math.round(r.quality * 100.0);
     }
 
 }

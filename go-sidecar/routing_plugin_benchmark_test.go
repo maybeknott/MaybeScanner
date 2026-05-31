@@ -27,4 +27,3 @@ func BenchmarkRoutingPluginValidationGenericProxy(b *testing.B) {
 		}
 	}
 }
-

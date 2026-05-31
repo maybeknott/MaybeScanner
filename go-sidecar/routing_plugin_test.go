@@ -146,6 +146,9 @@ func TestRoutingPluginsEndpointIsReadOnly(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status=%d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
+	if !strings.Contains(rec.Body.String(), `"error_code":"METHOD_NOT_ALLOWED"`) || !strings.Contains(rec.Body.String(), `"required_method":"GET"`) {
+		t.Fatalf("expected structured method error, got %s", rec.Body.String())
+	}
 }
 
 func TestRoutingPluginConfigRejectsProviderIDs(t *testing.T) {
@@ -155,7 +158,7 @@ func TestRoutingPluginConfigRejectsProviderIDs(t *testing.T) {
 	}
 	_, err = validateRoutingPluginConfig(registry, RoutingPluginConfig{
 		SchemaVersion: 1,
-		RouteID:       "route-psiphon-lab",
+		RouteID:       "route-psiphon-core",
 		PluginID:      "psiphon",
 		Enabled:       true,
 		RemoteDNS:     true,

@@ -231,7 +231,7 @@ func validateRoutingPluginConfig(registry *RoutingPluginRegistry, cfg RoutingPlu
 		redacted[key] = value
 	}
 	redacted = redactPluginDiagnostics(plugin, redacted)
-	warnings := []string{"generic scanner supports generic proxy/custom route validation only; provider adapters belong to MaybeEdgeScanner"}
+	warnings := []string{"MaybeScanner supports generic proxy/custom route validation only; provider route adapters are outside this app"}
 	return RoutingPluginConfigValidation{
 		Valid:          true,
 		RouteID:        cfg.RouteID,
