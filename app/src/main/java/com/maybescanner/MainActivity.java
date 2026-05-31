@@ -641,7 +641,7 @@ public class MainActivity extends Activity {
         LinearLayout classToggleRow = row();
         classToggleRow.addView(requireKnownNetwork, weight());
         classificationFilterPanel.addView(classToggleRow);
-        networkProviderSpinner = spinner(new String[]{"Any network", "Known network", "Akamai", "Cloudflare", "CloudFront/AWS", "Fastly", "GitHub", "Google", "Azure", "Bunny", "Unknown"});
+        networkProviderSpinner = spinner(new String[]{"Any network", "Known network", "Unknown"});
         classificationFilterPanel.addView(box("Network filter", networkProviderSpinner));
         LinearLayout classTextRow = row();
         networkFilterInput = input("", false); networkFilterInput.setHint("Any network");

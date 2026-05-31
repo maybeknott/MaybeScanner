@@ -1,125 +1,128 @@
-# MaybeScanner User & Operator Manual
+# MaybeScanner User Guide
 
-Welcome to **MaybeScanner**! This guide is designed to help operators, network engineers, and newcomers quickly master the application's comprehensive features.
+MaybeScanner is the target-first scanner. It starts from targets you provide, not from a public edge corpus. Use it to check TCP reachability, TLS certificate behavior, and HTTP status for IPs, domains, CIDR blocks, ranges, or imported target files.
 
 ---
 
-## 1. Quick Setup & Installation
+## 1. Setup
 
-### 1.1 Device Compatibility & Requirements
-* **Android OS**: Android 7.0 (API 24) through modern Android 16-era releases.
-* **Hardware Requirements**: Minimum 3GB RAM recommended for large multi-threaded scans.
-* **Privileged State**: Sui/Shizuku is fully optional but highly recommended to access mobile cellular diagnostics and baseband mutators.
+### Android App
 
-### 1.2 Running the Go Sidecar (Optional Desktop Mode)
-If you are planning to perform massive, enterprise-scale network audits from a desktop or server, the Go sidecar is your preferred interface:
+- Android 7.0/API 24 or newer.
+- Notification permission is needed for long-running foreground scans on modern Android.
+- Shizuku is optional and only enables advanced diagnostics when the user grants permission.
+
+### Optional Go Sidecar
+
+The sidecar can run on a workstation or server for higher-throughput local scan sessions:
+
 ```bash
 ./sidecar
 ```
-Open your local browser to `http://127.0.0.1:10808` to access the responsive HTML control panel, Prometheus metrics (`/metrics`), and Grafana dashboard assets.
+
+Open `http://127.0.0.1:10808` for the local dashboard. Mutating API calls require the local sidecar token.
 
 ---
 
-## 2. Navigating the Interface
+## 2. Sources
 
-MaybeScanner organizes its capabilities into a clean, modern **Three-Tab Glassmorphic Navigation Scaffold**. You can switch between tabs by tapping the top indicators or simply swiping horizontally.
+The Sources tab is the scan setup surface:
 
-```text
-+-------------------------------------------------------+
-|  🛰️ MaybeScanner                                     |
-|  [Sources]                [Results]      [Diagnostics]|
-+-------------------------------------------------------+
-|                                                       |
-|   Target Setup & Sampling   ---> Swipe Left/Right     |
-|                                                       |
-+-------------------------------------------------------+
-```
+- Paste IPs, domains, CIDR blocks, or ranges.
+- Import a target file when available.
+- Choose ports, timeout, worker count, and target cap.
+- Review the target preview before starting.
+- Use managed network corpora only from the collapsed advanced area, with explicit limits.
 
-### Tab 1: Sources
-This is your scanning command center:
-* **Pre-flight Presets**: Select from a robust list of global CDNs (Cloudflare, Akamai, Fastly, AWS CloudFront, etc.) to target.
-* **Managed Sampling Horizontal Scrubbers**: Use the slider to select an exact sample count from each preset. Setting the slider to `0` will load the complete preset.
-* **Manual Targets input**: Enter custom target ranges (IPv4, IPv6, hostnames, CIDRs, or hyphen ranges) separated by spaces or commas.
-* **Performance Posture (Source-Health panel)**: Evaluates target configurations dynamically and indicates whether your configuration represents a `LIGHT` (1-16 threads), `BALANCED` (17-64 threads), or `HIGH` (65+ threads) load on your device's battery and processor.
+MaybeScanner does not silently scan a bundled public target set when the target box is empty. Start remains unavailable until at least one valid target exists.
 
-### Tab 2: Results
-Analyzes incoming telemetry findings in real time:
-* **Interactive Result Cards**: Tap any card to view detailed TLS versions, cipher suites, ALPN values, HTTP status codes, and certificate fingerprints.
-* **Visual Telemetry Graphs**: Direct real-time charts illustrating working-IP ratios, latency distributions, and CDN distributions.
-* **Quick Action Filters**: Jump to "Working IPs," "Evidence Records," or the "Best Ranked per IP."
-* **Advanced Filter Bars**: Filter results instantly by status, known CDNs, latency caps, or quality scores.
-* **Flexible Export Panels**: Copy or export filtered targets as line-separated lists, JSON objects, or CSV files.
+Supported target formats:
 
-### Tab 3: Diagnostics
-System health and low-level adjustments:
-* **Live System Logs & Search**: View runtime engine logs. Features a real-time, case-insensitive log filter/search widget allowing rapid string lookup across large scrolling logs without UI stutter.
-* **Automated Network Diagnostic Suite**: Clickable diagnostic test runner executing in a dedicated background thread. Tests VPN/Proxy transport indicators, evaluates multi-domain DNS resolution latency (e.g. `one.one.one.one`, `dns.google`, `aparat.com`), tests raw TCP connect speed (port 443), validates secure HTTPS protocol negotiations, and dumps JVM heap allocations.
-* **Privileged Shizuku Controls**: Direct, guarded access to mobile baseband configurations.
-
----
-
-## 3. Custom Target Input Formats
-
-The manual targets text area in `Sources` accepts complex inputs. You can combine multiple formats separated by spaces, newlines, or commas:
-
-| Input Example | Target Resolution |
+| Input Example | Meaning |
 | :--- | :--- |
 | `1.1.1.1` | Single IPv4 address |
 | `2606:4700:4700::1111` | Single IPv6 address |
-| `one.one.one.one` | Resolved hostname address |
-| `192.168.1.0/24` | CIDR notation (expands to usable hosts; set an explicit IP limit or use `0` for unlimited) |
-| `192.168.1.10-192.168.1.20` | Hyphen-separated IP range |
+| `example.com` | Hostname resolved to addresses |
+| `192.168.1.0/24` | CIDR expansion, bounded by safety and target limits |
+| `192.168.1.10-192.168.1.20` | Inclusive IP range |
 
-> [!NOTE]
-> Large CIDR expansions are no longer blocked by a built-in hard cap. Use the IP scan limit field (`0` = unlimited) and performance presets to control run size on mobile hardware.
-
----
-
-## 4. Setting up Scan Profiles
-
-MaybeScanner supports four core auditing profiles:
-1. **Quick TCP**: Measures basic port reachability and latency. Extremely fast, ideal for checking general uptime.
-2. **Standard TLS**: Performs complete TLS handshakes, extracts certificate chain observations (issuer/SAN/CN when available), and cipher-suite details.
-3. **Deep HTTP**: Upgrades the TCP/TLS probe to send a full `HEAD` request, verifying remote HTTP responses, server headers, and ALPN flags.
-4. **Verify CDN Edge**: Checks CDN identity, cache headers, and provider evidence.
+Literal IP scans do not receive a default SNI. Hostname-derived TLS names are used only when the scan plan calls for hostname verification or an explicit manual override.
 
 ---
 
-## 5. Operating Privileged Cell Diagnostics (Shizuku)
+## 3. Scan Profiles
 
-If Shizuku is configured on your device, you can use the **Diagnostics** panel to modify your preferred mobile cell bands:
+Recommended MaybeScanner profiles are:
 
-```text
-            [ Start Shizuku Service ]
-                        │
-           [ Execute Safe Bridge Probe ]
-                        │
-   ┌────────────────────┼────────────────────┐
-   ▼                    ▼                    ▼
- [ LTE Only ]       [ 5G / LTE ]          [ Auto ]
-```
+1. **TCP Reachability**: connect checks and latency.
+2. **TCP Ports**: repeated reachability checks across selected ports.
+3. **TLS Certificate Check**: TLS handshake, protocol, cipher, certificate subject/issuer/SAN, and fingerprint observation.
+4. **HTTP Status Check**: HTTP response status and selected headers when the negotiated protocol supports the probe.
+5. **Full Scan**: TCP, TLS, certificate, and HTTP phases with stable per-phase result codes.
 
-### Steps to Mutate Preferred Networks Safely:
-1. **Start Shizuku**: Confirm Shizuku is active on your device.
-2. **Execute Bridge Probe**: Tap the probe button to verify that the app can read system settings keys.
-3. **Select Radio Preference**: Tap a mode (e.g., **5G/LTE**). A warning dialog will ask you to confirm.
-4. **Mutate**: The app will bundle settings keys and apply the changes via type-safe binder transactions. Cell handovers take 5-10 seconds to stabilize.
+Advanced TLS ClientHello selection, manual SNI/Host override, HTTP/3 hints, and provider classification are optional diagnostics. They are not the default product flow.
 
 ---
 
-## 6. Advanced Go Sidecar Capabilities
+## 4. Results
 
-When running in sidecar mode, you can monitor performance logs dynamically:
-* **Prometheus Endpoint**: Connect your local Prometheus instance to `http://localhost:10808/metrics`.
-* **Grafana Integration**: Import the bundled `go-sidecar/grafana-dashboard.json` into your local Grafana portal to access real-time charts.
-* **Safety Opt-out list**: Add target ranges to `go-sidecar/assets/do_not_scan_cidrs.txt` to completely block the sidecar from auditing specific subnets.
+Results are shown as completed attempts with explicit phase status:
+
+- IP and port.
+- TCP/TLS/HTTP status.
+- Latency and selected ALPN.
+- Certificate names and fingerprint when available.
+- Best-effort network classification when a bundled or refreshed corpus matches.
+
+Classification is an annotation, not target identity. Use the advanced classification filter only to narrow visible result rows after a scan.
+
+If all visible attempts time out, treat that as a failure condition rather than an empty result set. Try fewer workers, a longer timeout, Wi-Fi, a smaller target plan, or a different route.
 
 ---
 
-## 7. Operational Troubleshooting
+## 5. Diagnostics
 
-| Symptom | Cause | Remediation |
+Diagnostics are separate from scan state:
+
+- Network environment summary.
+- DNS and TCP diagnostic probes.
+- Sidecar heartbeat and local API status.
+- Optional public-IP lookup, disabled by default.
+- Optional Shizuku-assisted radio diagnostics when permission is granted.
+
+Use **Copy redacted** for normal support/debugging. Full diagnostic copy should be confirmed explicitly because it can contain local network details.
+
+Shizuku does not imply root, packet capture, raw socket privileges, or permission to bypass Android power policy. Privileged actions must be user-visible and readback-verified.
+
+---
+
+## 6. Safety
+
+Default safety excludes private, loopback, multicast, link-local, documentation, and broadcast ranges unless explicitly enabled. Broad scans require an explicit visible plan with target count, checks, rate, worker budget, and user-selected limits. Current sidecar policy relies on explicit budgets rather than a separate server-side broad-scan confirmation block.
+
+On mobile:
+
+- Prefer 8-32 workers.
+- Keep rates modest on metered networks.
+- Avoid broad scans while unplugged.
+- Stop or reduce workers when timeout rate remains extreme.
+
+---
+
+## 7. Export
+
+Exports should preserve schema version, product mode, target identity, phase results, error codes, redaction state, app version, sidecar version, and corpus revision where available.
+
+Default redaction covers local API tokens, proxy credentials, plugin secrets, sensitive diagnostics, and private network/device details when privacy mode is enabled.
+
+---
+
+## 8. Troubleshooting
+
+| Symptom | Likely Cause | Action |
 | :--- | :--- | :--- |
-| **Shizuku Binding Fails** | Shizuku Manager is not authorized or not running. | Open Shizuku app, start the service, and grant permission to MaybeScanner. |
-| **All Probes Timeout** | Local firewall, VPN, or network interface blocking raw outbound sockets. | Disable custom DNS proxies or active VPNs, and verify standard internet connectivity. |
-| **Out-Of-Memory / App Crash** | Too many parallel threads or extremely large CIDR expansions. | Reduce threads to 32 or less, and set a smaller target cap slider on Tab 1. |
+| No targets selected | The app starts empty by design. | Paste targets or import a file. |
+| Broad scan is larger than intended | Target budget or source selection is too broad. | Review count, rate, route, safety policy, and target limits before starting. |
+| All probes time out | Network path, firewall, route, timeout, or worker pressure. | Reduce workers, increase timeout, try Wi-Fi, or shrink target set. |
+| TLS succeeds but HTTP is skipped | ALPN selected HTTP/2 and the HTTP/1.1 probe is not valid on that connection. | Use HTTP/2-capable probing when available or restrict HTTP/1.1 on a separate run. |
+| Shizuku unavailable | Service missing, not running, or permission not granted. | Open Shizuku and grant MaybeScanner permission. |

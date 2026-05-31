@@ -1,18 +1,18 @@
 # MaybeScanner Go Sidecar
 
-The sidecar is a standalone HTTP service for higher-volume edge and DNS scans. It has no Python dependency and can run directly on a workstation, VPS, container host, or CI worker.
+The sidecar is a standalone HTTP service for higher-volume target and DNS scans. It has no Python dependency and can run directly on a workstation, VPS, container host, or CI worker.
 
 ## What It Provides
 
 - Browser dashboard at `/`.
-- Streaming edge scans over newline-delimited JSON.
+- Streaming target-first scans over newline-delimited JSON.
 - Standards-based DNS scans using `github.com/miekg/dns`.
 - IPv4 and IPv6 target parsing.
 - ALPN validation for `h2` and `http/1.1`.
 - uTLS ClientHello fingerprint selection and rotation for Chrome, Firefox, iOS, and randomized TLS probes.
 - Alt-Svc HTTP/3 hint capture from HTTP probe responses.
 - TLS certificate and HTTP header metadata capture.
-- CDN classification hints.
+- Best-effort provider/network classification hints.
 - Randomized target ordering, pacing, and jitter controls.
 - Bundled safety-prefix loading from `assets/do_not_scan_cidrs.txt`.
 - Strict CIDR expansion limits to avoid accidental whole-internet or huge-subnet expansion.
@@ -67,16 +67,16 @@ That image is cached with BuildKit `gha` and registry layers so dependency downl
 - `GET /health` returns process health, goroutine count, and heap bytes.
 - `GET /metrics` returns Prometheus-style metrics.
 - `GET /grafana-dashboard.json` returns the bundled Grafana dashboard.
-- `POST /api/scan` streams NDJSON edge results.
+- `POST /api/scan` streams NDJSON scan results.
 - `POST /api/dns` streams NDJSON DNS resolver results.
 - `POST /api/stop` requests graceful cancellation/shutdown.
 - `POST /api/export/nmap` returns Nmap XML for compatible tooling.
 
-## Edge Scan Request
+## Scan Request
 
-`POST /api/scan` accepts JSON with targets, SNIs, ports, HTTP path, worker count, timeout, optional pacing controls, and `tls_fingerprint`. Valid fingerprint values are `rotate`, `chrome`, `firefox`, `ios`, `randomized`, and `randomized-no-alpn`. Results stream as each target is processed, which keeps memory use predictable during large scans.
+`POST /api/scan` accepts JSON with targets, ports, HTTP path, worker count, timeout, optional pacing controls, and `tls_fingerprint`. Valid fingerprint values are `rotate`, `chrome`, `firefox`, `ios`, `randomized`, and `randomized-no-alpn`. Literal IP scans do not receive a default SNI; hostname-derived names are used only when present in the target plan or explicitly requested. Results stream as each target is processed, which keeps memory use predictable during large scans.
 
-Typical result fields include target, IP, port, SNI, TCP status, TLS status, HTTP status, latency, ALPN, selected TLS fingerprint, Alt-Svc and HTTP/3 hints, certificate subject/issuer/SAN values, server headers, CDN hint, and score.
+Typical result fields include target, IP, port, SNI mode/name where applicable, TCP status, TLS status, HTTP status, latency, ALPN, selected TLS fingerprint, Alt-Svc and HTTP/3 hints, certificate subject/issuer/SAN values, server headers, best-effort network classification, and score.
 
 ## DNS Scan Request
 

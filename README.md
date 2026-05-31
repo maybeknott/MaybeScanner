@@ -1,10 +1,10 @@
 # MaybeScanner
 
-MaybeScanner is an Android network scanner focused on target-first IP checks (IP/domain inputs with optional SNI candidates), with an optional Go sidecar for higher-throughput scans and export/observability workflows.
+MaybeScanner is an Android network scanner focused on target-first IP checks. It scans user-supplied IPs, domains, CIDR blocks, ranges, or imported files, with an optional Go sidecar for higher-throughput scans and export/observability workflows.
 
 ## What It Does
 
-- Runs TCP/TLS/HTTP probing across managed and custom targets.
+- Runs TCP/TLS/HTTP probing across explicit user targets, with managed corpora kept as advanced diagnostics.
 - Provides live scan progress, result ranking, and export views.
 - Includes diagnostics tooling (logs, network checks, optional Shizuku-assisted radio diagnostics).
 - Supports an optional local Go sidecar (`go-sidecar`) for desktop/server-driven scan sessions.
@@ -12,6 +12,7 @@ MaybeScanner is an Android network scanner focused on target-first IP checks (IP
 ## Project Scope
 
 - This repo is the **target-first** scanner product.
+- Literal IP scans do not receive a default SNI.
 - If you need explicit SNI/IP route pairing behavior, use the sibling project: `MaybeEdgeScanner`.
 
 ## Repository Layout

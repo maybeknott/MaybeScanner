@@ -20,10 +20,10 @@ graph TD
     G -->|Thread Pool Execution| I[settings global put]
 ```
 
-### 1.1 Symmetrical Coexistence & Sibling Architecture
-MaybeScanner maintains strict behavioral and layout symmetry with its sibling project, **MaybeEdgeScanner**, sharing identical layouts, diagnostic modules, and platform boundaries. The single intentional difference lies in the scanning target mapping:
-* **MaybeScanner** is an IP-first target scanner. It directly audits target IPs or domains. SNIs extracted from certificates during handshakes are logged as host hints.
-* **MaybeEdgeScanner** pairs IP/SNI routes explicitly to check complex CDN edge configurations and routing tables.
+### 1.1 Product Boundary & Sibling Architecture
+MaybeScanner shares low-level contracts and diagnostic boundaries with its sibling project, **MaybeEdgeScanner**, but the products intentionally differ at the default workflow:
+* **MaybeScanner** is an IP-first target scanner. It audits explicit user targets. Literal IP scans are no-SNI unless the user enables an advanced override.
+* **MaybeEdgeScanner** owns explicit IP/SNI/HTTP Host/route pairing and provider-route comparison workflows.
 
 ---
 
@@ -127,7 +127,7 @@ The user interface of MaybeScanner is programmatically generated in pure Java to
 ## 5. Go Sidecar Architecture & Internals
 
 The companion Go sidecar includes a robust suite of defenses:
-* **Radix-Tree Longest Prefix Matcher**: Inside `initCDNIndex`, IP subnets are parsed and indexed into a custom bitwise Radix-Tree. IP classifications utilize lock-free bitwise lookups, avoiding expensive string conversions.
+* **Provider Classification Index**: The current implementation uses a pointer-linked prefix helper protected by ordinary synchronization. It is a best-effort result annotation, not a lock-free arena-backed routing primitive.
 * **Lock-Free Duplicate Filters**: Evaluates IP targets as compact `map[[16]byte]bool` arrays rather than doing expensive string operations (`.String()`), slashing heap allocations.
 * **Rolling Read/Write Deadlines**: Prevents slow-rate socket exhaustion by enforcing dynamic socket deadlines:
   ```go
