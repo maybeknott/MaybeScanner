@@ -53,41 +53,41 @@ type scanRequest struct {
 }
 
 type result struct {
-	Target                string `json:"target"`
-	IP                    string `json:"ip"`
-	Port                  int    `json:"port"`
-	SNI                   string `json:"sni"`
-	TCP                   bool   `json:"tcp"`
-	TLS                   bool   `json:"tls"`
-	HTTP                  bool   `json:"http"`
-	HTTPStatus            int    `json:"http_status"`
-	TLSVersion            string `json:"tls_version,omitempty"`
-	TLSCipher             string `json:"tls_cipher,omitempty"`
-	CertVerified          bool   `json:"cert_verified"`
-	ALPN                  string `json:"alpn,omitempty"`
-	TLSFingerprint        string `json:"tls_fingerprint,omitempty"`
-	CertSubject           string `json:"cert_subject,omitempty"`
-	ServerHeader          string `json:"server_header,omitempty"`
-	CacheHeader           string `json:"cache_header,omitempty"`
-	AltSvc                string `json:"alt_svc,omitempty"`
-	HTTP3Hint             bool   `json:"http3_hint,omitempty"`
-	HTTPProbeCode         string `json:"http_probe_code,omitempty"`
-	NetworkClassification string `json:"network_classification"`
-	ProviderID            string `json:"provider_id,omitempty"`
-	ProviderName          string `json:"provider_name,omitempty"`
-	ProviderPrefix        string `json:"provider_prefix,omitempty"`
-	ProviderConfidence    string `json:"provider_confidence,omitempty"`
-	ProviderCorpusID      string `json:"provider_corpus_id,omitempty"`
-	ProviderSource        string `json:"provider_source,omitempty"`
-	LatencyMS             int64  `json:"latency_ms"`
-	Score                 int    `json:"score"`
-	ErrorCode             string `json:"error_code,omitempty"`
-	Error                 string `json:"error,omitempty"`
+	Target                string        `json:"target"`
+	IP                    string        `json:"ip"`
+	Port                  int           `json:"port"`
+	SNI                   string        `json:"sni"`
+	TCP                   bool          `json:"tcp"`
+	TLS                   bool          `json:"tls"`
+	HTTP                  bool          `json:"http"`
+	HTTPStatus            int           `json:"http_status"`
+	TLSVersion            string        `json:"tls_version,omitempty"`
+	TLSCipher             string        `json:"tls_cipher,omitempty"`
+	CertVerified          bool          `json:"cert_verified"`
+	ALPN                  string        `json:"alpn,omitempty"`
+	TLSFingerprint        string        `json:"tls_fingerprint,omitempty"`
+	CertSubject           string        `json:"cert_subject,omitempty"`
+	ServerHeader          string        `json:"server_header,omitempty"`
+	CacheHeader           string        `json:"cache_header,omitempty"`
+	AltSvc                string        `json:"alt_svc,omitempty"`
+	HTTP3Hint             bool          `json:"http3_hint,omitempty"`
+	HTTPProbeCode         string        `json:"http_probe_code,omitempty"`
+	NetworkClassification string        `json:"network_classification"`
+	ProviderID            string        `json:"provider_id,omitempty"`
+	ProviderName          string        `json:"provider_name,omitempty"`
+	ProviderPrefix        string        `json:"provider_prefix,omitempty"`
+	ProviderConfidence    string        `json:"provider_confidence,omitempty"`
+	ProviderCorpusID      string        `json:"provider_corpus_id,omitempty"`
+	ProviderSource        string        `json:"provider_source,omitempty"`
+	LatencyMS             int64         `json:"latency_ms"`
+	Score                 int           `json:"score"`
+	ErrorCode             string        `json:"error_code,omitempty"`
+	Error                 string        `json:"error,omitempty"`
 	FinalPhase            string        `json:"final_phase,omitempty"`
 	PhaseResults          []PhaseResult `json:"phase_results,omitempty"`
 	PlanID                string        `json:"plan_id,omitempty"`
 	ResultCorrelationID   string        `json:"result_correlation_id,omitempty"`
-	BatchNumber           int    `json:"batch_number"`
+	BatchNumber           int           `json:"batch_number"`
 }
 
 type probeOptions struct {
@@ -1162,10 +1162,11 @@ func httpProbe(ctx context.Context, ip string, port int, sni, path string, timeo
 		return false, 0, "", "", "", false
 	}
 	defer conn.Close()
-	return httpProbeConn(ctx, conn, ip, sni, path, timeoutMS)
+	httpOK, status, server, cache, altSvc, http3, _ := httpProbeConn(ctx, conn, ip, sni, path, timeoutMS)
+	return httpOK, status, server, cache, altSvc, http3
 }
 
-func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path string, timeoutMS int) (bool, int, string, string, string, bool) {
+func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path string, timeoutMS int) (bool, int, string, string, string, bool, string) {
 	rollingDeadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
 	_ = conn.SetDeadline(rollingDeadline)
 
@@ -1174,7 +1175,7 @@ func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path stri
 		host = ip
 	}
 	if _, err := fmt.Fprintf(conn, "HEAD %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: MaybeScanner/1.2\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nX-Maybe-Cachebuster: %d\r\nConnection: close\r\n\r\n", path, host, time.Now().UnixNano()); err != nil {
-		return false, 0, "", "", "", false
+		return false, 0, "", "", "", false, classifyNetworkError(err, "http")
 	}
 	reader := pooledReader(io.LimitReader(conn, 64*1024))
 	defer putReader(reader)
@@ -1182,13 +1183,26 @@ func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path stri
 	_ = conn.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
 	line, err := readLimitedLine(reader, 4096)
 	status := parseHTTPStatus(line)
+	if err != nil && errors.Is(err, io.EOF) && status > 0 {
+		// Accept short-lived but syntactically valid status-line responses that close immediately.
+		err = nil
+	}
+	if status == 0 {
+		if err != nil {
+			return false, 0, "", "", "", false, classifyNetworkError(err, "http")
+		}
+		return false, 0, "", "", "", false, "HTTP_PARSE_FAILED"
+	}
 	server, cache, altSvc := "", "", ""
-	if err == nil && status > 0 {
+	if err == nil {
 		for i := 0; i < 48; i++ {
 			_ = conn.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
 			header, hErr := readLimitedLine(reader, 4096)
 			if hErr != nil {
-				break
+				if errors.Is(hErr, io.EOF) && strings.TrimSpace(header) == "" {
+					break
+				}
+				return false, status, server, cache, altSvc, false, classifyNetworkError(hErr, "http")
 			}
 			header = strings.TrimRight(header, "\r\n")
 			if strings.TrimSpace(header) == "" {
@@ -1209,15 +1223,15 @@ func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path stri
 			}
 		}
 	}
-	return ctx.Err() == nil && err == nil && status > 0 && status < 500, status, server, cache, altSvc, strings.Contains(strings.ToLower(altSvc), "h3")
+	return ctx.Err() == nil && status < 500, status, server, cache, altSvc, strings.Contains(strings.ToLower(altSvc), "h3"), ""
 }
 
 func probeHTTPOverNegotiatedALPN(ctx context.Context, conn net.Conn, ip string, sni string, path string, timeoutMS int, negotiatedALPN string) (bool, int, string, string, string, bool, string) {
 	if strings.EqualFold(strings.TrimSpace(negotiatedALPN), "h2") {
 		return false, 0, "", "", "", false, "HTTP2_UNSUPPORTED_IN_PROBE"
 	}
-	httpOK, status, server, cache, altSvc, http3 := httpProbeConn(ctx, conn, ip, sni, path, timeoutMS)
-	return httpOK, status, server, cache, altSvc, http3, ""
+	httpOK, status, server, cache, altSvc, http3, probeCode := httpProbeConn(ctx, conn, ip, sni, path, timeoutMS)
+	return httpOK, status, server, cache, altSvc, http3, probeCode
 }
 
 func dialUTLS(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, opts DPIObfuscationOptions) (*tls.UConn, bool, error) {

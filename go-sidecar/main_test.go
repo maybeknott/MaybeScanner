@@ -293,6 +293,96 @@ func TestProbeHTTPOverNegotiatedALPNExecutesHTTP11WhenAllowed(t *testing.T) {
 	}
 }
 
+func TestProbeHTTPOverNegotiatedALPNAcceptsEOFWithValidStatusLine(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reader := bufio.NewReader(server)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, _ = io.WriteString(server, "HTTP/1.1 200 OK")
+		_ = server.Close()
+	}()
+	httpOK, status, _, _, _, _, code := probeHTTPOverNegotiatedALPN(context.Background(), client, "192.0.2.6", "", "/", 1000, "http/1.1")
+	<-done
+	if !httpOK || status != 200 {
+		t.Fatalf("expected success with status 200, got ok=%v status=%d", httpOK, status)
+	}
+	if code != "" {
+		t.Fatalf("expected empty probe code for valid EOF status line, got %q", code)
+	}
+}
+
+func TestProbeHTTPOverNegotiatedALPNReturnsParseFailureForMalformedStatus(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reader := bufio.NewReader(server)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, _ = io.WriteString(server, "not-http\r\n\r\n")
+		_ = server.Close()
+	}()
+	httpOK, status, _, _, _, _, code := probeHTTPOverNegotiatedALPN(context.Background(), client, "192.0.2.7", "", "/", 1000, "http/1.1")
+	<-done
+	if httpOK || status != 0 {
+		t.Fatalf("expected malformed status failure, got ok=%v status=%d", httpOK, status)
+	}
+	if code != "HTTP_PARSE_FAILED" {
+		t.Fatalf("expected HTTP_PARSE_FAILED, got %q", code)
+	}
+}
+
+func TestProbeHTTPOverNegotiatedALPNFailsOnMidHeaderTruncation(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reader := bufio.NewReader(server)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, _ = io.WriteString(server, "HTTP/1.1 200 OK\r\nServer: test")
+		_ = server.Close()
+	}()
+	httpOK, _, _, _, _, _, code := probeHTTPOverNegotiatedALPN(context.Background(), client, "192.0.2.8", "", "/", 1000, "http/1.1")
+	<-done
+	if httpOK {
+		t.Fatal("expected failure on mid-header truncation")
+	}
+	if code != "HTTP_FAILED" {
+		t.Fatalf("expected HTTP_FAILED, got %q", code)
+	}
+}
+
 func TestClassifyNetworkError(t *testing.T) {
 	cases := []struct {
 		name  string
