@@ -20,7 +20,7 @@ The sidecar can run on a workstation or server for higher-throughput local scan 
 ./sidecar
 ```
 
-Open `http://127.0.0.1:10808` for the local dashboard. Mutating API calls require the local sidecar token.
+Open `http://127.0.0.1:10808` for the local dashboard. Local sidecar API reads and mutations (including `/metrics` and `/health`) require sidecar auth credentials (Bearer header, `X-Sidecar-Token`, or the HttpOnly sidecar cookie).
 
 ---
 
