@@ -1,0 +1,17 @@
+﻿{
+    "generated_utc":  "2026-06-01T14:04:38Z",
+    "repository":  "MaybeScanner",
+    "binary_count":  2,
+    "binaries":  [
+                     {
+                         "relative_path":  "app/src/main/assets/sidecar/arm64-v8a/maybescanner-sidecar",
+                         "size_bytes":  11600168,
+                         "sha256":  "c7e7af85617941df30917bd8e93b41d3a26950cbe864f91fdc41566a7a82ab6a"
+                     },
+                     {
+                         "relative_path":  "app/src/main/assets/sidecar/armeabi-v7a/maybescanner-sidecar",
+                         "size_bytes":  11369112,
+                         "sha256":  "775a47aef0b67738efd8eb27d97de089d1b6f80a47e9d070b4b0f3d3a69b5235"
+                     }
+                 ]
+}
