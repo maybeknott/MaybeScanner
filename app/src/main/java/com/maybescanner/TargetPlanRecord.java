@@ -14,17 +14,19 @@ final class TargetPlanRecord {
     private final String planId;
     private final String correlationId;
     private final String productMode;
+    private final String normalizedKind;
     private final String sniMode;
     private final String dedupeKey;
     private final String originalHostname;
     private final String routeId;
 
     private TargetPlanRecord(JSONObject payload, String planId, String correlationId, String productMode,
-                             String sniMode, String dedupeKey, String originalHostname, String routeId) {
+                             String normalizedKind, String sniMode, String dedupeKey, String originalHostname, String routeId) {
         this.payload = payload;
         this.planId = planId;
         this.correlationId = correlationId;
         this.productMode = productMode;
+        this.normalizedKind = normalizedKind;
         this.sniMode = sniMode;
         this.dedupeKey = dedupeKey;
         this.originalHostname = originalHostname;
@@ -92,7 +94,7 @@ final class TargetPlanRecord {
             o.put("result_correlation_id", correlationId);
         } catch (Exception ignored) {
         }
-        return new TargetPlanRecord(o, planId, correlationId, productMode, sniMode, dedupe,
+        return new TargetPlanRecord(o, planId, correlationId, productMode, kind, sniMode, dedupe,
                 hostname == null ? "" : hostname, clean(routeId));
     }
 
@@ -114,6 +116,10 @@ final class TargetPlanRecord {
 
     String productMode() {
         return productMode;
+    }
+
+    String normalizedKind() {
+        return normalizedKind;
     }
 
     String sniMode() {
@@ -139,8 +145,8 @@ final class TargetPlanRecord {
     private static String normalizedKind(String token) {
         if (token.isEmpty()) return "ip";
         if (ScanTargetPlanner.isIp(token)) return "ip";
-        if (token.contains("/")) return "cidr";
-        if (token.contains("-")) return "range";
+        if (ScanTargetPlanner.looksLikePrefix(token)) return "cidr";
+        if (ScanTargetPlanner.looksLikeIpv4Range(token)) return "range";
         return "hostname";
     }
 

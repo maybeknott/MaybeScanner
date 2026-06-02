@@ -30,4 +30,16 @@ public class ScanTargetPlannerExpansionTest {
         assertNull(expanded.get(0).expansion);
         assertNotNull(expanded.get(1).expansion);
     }
+
+    @Test
+    public void expandTargetsDetailedLeavesHyphenatedHostnamesLiteral() {
+        List<ScanTargetPlanner.ExpandedTarget> expanded = ScanTargetPlanner.expandTargetsDetailed(
+                Arrays.asList("target-edge.example.com", "203.0.113.10-203.0.113.11"), 10);
+
+        assertEquals(3, expanded.size());
+        assertEquals("target-edge.example.com", expanded.get(0).address);
+        assertNull(expanded.get(0).expansion);
+        assertEquals("203.0.113.10", expanded.get(1).address);
+        assertNotNull(expanded.get(1).expansion);
+    }
 }

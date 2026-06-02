@@ -23,6 +23,16 @@ public class TargetPlanRecordTest {
     }
 
     @Test
+    public void hyphenatedHostnameKeepsHostnameKind() {
+        TargetPlanRecord plan = TargetPlanRecord.forIpFirstProbe(
+                "target-edge.example.com", "198.51.100.10", 443, "target-edge.example.com", true);
+
+        assertEquals("domain_sni", plan.sniMode());
+        assertEquals("target-edge.example.com", plan.originalHostname());
+        assertEquals("hostname", plan.normalizedKind());
+    }
+
+    @Test
     public void planAndCorrelationIdsAreStable() {
         TargetPlanRecord a = TargetPlanRecord.forIpFirstProbe("1.1.1.1", "1.1.1.1", 443, "", false);
         TargetPlanRecord b = TargetPlanRecord.forIpFirstProbe("1.1.1.1", "1.1.1.1", 443, "", false);
