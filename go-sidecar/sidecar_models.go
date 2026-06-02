@@ -28,41 +28,42 @@ type scanRequest struct {
 }
 
 type result struct {
-	Target                string        `json:"target"`
-	IP                    string        `json:"ip"`
-	Port                  int           `json:"port"`
-	SNI                   string        `json:"sni"`
-	TCP                   bool          `json:"tcp"`
-	TLS                   bool          `json:"tls"`
-	HTTP                  bool          `json:"http"`
-	HTTPStatus            int           `json:"http_status"`
-	TLSVersion            string        `json:"tls_version,omitempty"`
-	TLSCipher             string        `json:"tls_cipher,omitempty"`
-	CertVerified          bool          `json:"cert_verified"`
-	ALPN                  string        `json:"alpn,omitempty"`
-	TLSFingerprint        string        `json:"tls_fingerprint,omitempty"`
-	CertSubject           string        `json:"cert_subject,omitempty"`
-	ServerHeader          string        `json:"server_header,omitempty"`
-	CacheHeader           string        `json:"cache_header,omitempty"`
-	AltSvc                string        `json:"alt_svc,omitempty"`
-	HTTP3Hint             bool          `json:"http3_hint,omitempty"`
-	HTTPProbeCode         string        `json:"http_probe_code,omitempty"`
-	NetworkClassification string        `json:"network_classification"`
-	ProviderID            string        `json:"provider_id,omitempty"`
-	ProviderName          string        `json:"provider_name,omitempty"`
-	ProviderPrefix        string        `json:"provider_prefix,omitempty"`
-	ProviderConfidence    string        `json:"provider_confidence,omitempty"`
-	ProviderCorpusID      string        `json:"provider_corpus_id,omitempty"`
-	ProviderSource        string        `json:"provider_source,omitempty"`
-	LatencyMS             int64         `json:"latency_ms"`
-	Score                 int           `json:"score"`
-	ErrorCode             string        `json:"error_code,omitempty"`
-	Error                 string        `json:"error,omitempty"`
-	FinalPhase            string        `json:"final_phase,omitempty"`
-	PhaseResults          []PhaseResult `json:"phase_results,omitempty"`
-	PlanID                string        `json:"plan_id,omitempty"`
-	ResultCorrelationID   string        `json:"result_correlation_id,omitempty"`
-	BatchNumber           int           `json:"batch_number"`
+	Target                string              `json:"target"`
+	IP                    string              `json:"ip"`
+	Port                  int                 `json:"port"`
+	SNI                   string              `json:"sni"`
+	TCP                   bool                `json:"tcp"`
+	TLS                   bool                `json:"tls"`
+	HTTP                  bool                `json:"http"`
+	HTTPStatus            int                 `json:"http_status"`
+	TLSVersion            string              `json:"tls_version,omitempty"`
+	TLSCipher             string              `json:"tls_cipher,omitempty"`
+	CertVerified          bool                `json:"cert_verified"`
+	ALPN                  string              `json:"alpn,omitempty"`
+	TLSFingerprint        string              `json:"tls_fingerprint,omitempty"`
+	CertSubject           string              `json:"cert_subject,omitempty"`
+	ServerHeader          string              `json:"server_header,omitempty"`
+	CacheHeader           string              `json:"cache_header,omitempty"`
+	AltSvc                string              `json:"alt_svc,omitempty"`
+	HTTP3Hint             bool                `json:"http3_hint,omitempty"`
+	HTTPProbeCode         string              `json:"http_probe_code,omitempty"`
+	NetworkClassification string              `json:"network_classification"`
+	ProviderID            string              `json:"provider_id,omitempty"`
+	ProviderName          string              `json:"provider_name,omitempty"`
+	ProviderPrefix        string              `json:"provider_prefix,omitempty"`
+	ProviderConfidence    string              `json:"provider_confidence,omitempty"`
+	ProviderCorpusID      string              `json:"provider_corpus_id,omitempty"`
+	ProviderSource        string              `json:"provider_source,omitempty"`
+	LatencyMS             int64               `json:"latency_ms"`
+	Score                 int                 `json:"score"`
+	ErrorCode             string              `json:"error_code,omitempty"`
+	Error                 string              `json:"error,omitempty"`
+	FinalPhase            string              `json:"final_phase,omitempty"`
+	PhaseResults          []PhaseResult       `json:"phase_results,omitempty"`
+	PlanID                string              `json:"plan_id,omitempty"`
+	ResultCorrelationID   string              `json:"result_correlation_id,omitempty"`
+	TargetPlan            *TargetPlanEvidence `json:"target_plan,omitempty"`
+	BatchNumber           int                 `json:"batch_number"`
 }
 
 type probeOptions struct {
@@ -71,6 +72,7 @@ type probeOptions struct {
 	SNIMode             string
 	PlanID              string
 	ResultCorrelationID string
+	TargetPlan          *TargetPlanEvidence
 }
 
 type stats struct {

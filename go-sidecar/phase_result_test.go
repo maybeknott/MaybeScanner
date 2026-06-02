@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +29,61 @@ func TestDecodeSidecarScanRequestV1(t *testing.T) {
 	item := got.planWorkItems()[0]
 	if item.planID != "p1" || item.port != 443 {
 		t.Fatalf("unexpected plan item: %+v", item)
+	}
+}
+
+func TestPlanWorkItemCarriesTargetPlanEvidence(t *testing.T) {
+	body := []byte(`{"schema_version":1,"request_id":"req-2","product_mode":"ip_first","plans":[{"schema_version":1,"plan_id":"p2","raw_token":"example.com","source_type":"manual","normalized_kind":"hostname","original_hostname":"example.com","resolved_ip":"93.184.216.34","ip_family":"ipv4","port":8443,"sni_host":"example.com","sni_mode":"from_hostname","http_host":"example.com","verification_host":"example.com","dns_mode":"pre_resolved","resolver_id":"system","alpn_policy":"alpn_select","safety_status":"allowed","expansion_parent":"example.com","expansion_index":3,"expansion_total_theoretical":8,"expansion_total_capped":4,"expansion_skipped_count":1,"sampling_seed":"seed-1","dedupe_key":"dedupe-1","result_correlation_id":"corr-2"}],"scan_options":{"timeout_ms":1000,"threads":1,"http_probe":false,"http_path":"/"},"safety_policy":{"respect_reserved_ranges":true,"max_plans":10,"max_cidr_hosts":0,"rate_per_second":0,"jitter_ms":0}}`)
+	req, ok := decodeSidecarScanRequestV1(body)
+	if !ok {
+		t.Fatal("expected v1 decode")
+	}
+	items := req.planWorkItems()
+	if len(items) != 1 {
+		t.Fatalf("planWorkItems()=%d want 1", len(items))
+	}
+	opts := items[0].probeOptions()
+	if opts.TargetPlan == nil {
+		t.Fatal("expected TargetPlan evidence")
+	}
+	plan := opts.TargetPlan
+	if plan.RawToken != "example.com" || plan.OriginalHostname != "example.com" || plan.ResolvedIP != "93.184.216.34" {
+		t.Fatalf("identity fields not preserved: %+v", plan)
+	}
+	if plan.ProductMode != "ip_first" || plan.Port != 8443 || plan.SNIHost != "example.com" || plan.SNIMode != "from_hostname" {
+		t.Fatalf("execution fields not preserved: %+v", plan)
+	}
+	if plan.ExpansionIndex == nil || *plan.ExpansionIndex != 3 || plan.ExpansionTotalCapped == nil || *plan.ExpansionTotalCapped != 4 {
+		t.Fatalf("expansion fields not preserved: %+v", plan)
+	}
+	if plan.DedupeKey != "dedupe-1" || plan.ResultCorrelationID != "corr-2" {
+		t.Fatalf("correlation fields not preserved: %+v", plan)
+	}
+}
+
+func TestResultJSONIncludesTargetPlanEvidence(t *testing.T) {
+	res := result{
+		Target:              "example.com",
+		Port:                443,
+		PlanID:              "p-json",
+		ResultCorrelationID: "corr-json",
+		TargetPlan: &TargetPlanEvidence{
+			SchemaVersion:       1,
+			PlanID:              "p-json",
+			ProductMode:         "ip_first",
+			RawToken:            "example.com",
+			ResolvedIP:          "93.184.216.34",
+			Port:                443,
+			ResultCorrelationID: "corr-json",
+		},
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	out := string(b)
+	if !strings.Contains(out, `"target_plan"`) || !strings.Contains(out, `"raw_token":"example.com"`) {
+		t.Fatalf("target_plan evidence missing from json: %s", out)
 	}
 }
 
