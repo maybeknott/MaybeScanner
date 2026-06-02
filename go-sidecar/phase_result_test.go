@@ -38,8 +38,10 @@ func TestPhaseStatusFromCode(t *testing.T) {
 		{code: "TCP_CONNECT_TIMEOUT", want: "timeout"},
 		{code: "TCP_CONNECT_REFUSED", want: "refused"},
 		{code: "TLS_HANDSHAKE_RESET", want: "reset"},
+		{code: "PROXY_CONNECT_MALFORMED_RESPONSE", want: "malformed"},
 		{code: "SAFETY_RESERVED_RANGE_EXCLUDED", want: "skipped"},
 		{code: "HTTP2_UNSUPPORTED_IN_PROBE", want: "unsupported"},
+		{code: "LOCAL_API_THROTTLED", want: "throttled"},
 		{code: "TLS_VERIFY_HOSTNAME_MISMATCH", want: "failed"},
 		{code: "DNS_FAILED", want: "failed"},
 	}
@@ -71,6 +73,14 @@ func TestFinalizeFinalPhasePrefersStructuredPhases(t *testing.T) {
 	if got := finalizeFinalPhase(res, res.PhaseResults, "TCP_CONNECT_TIMEOUT"); got != "tcp" {
 		t.Fatalf("finalizeFinalPhase()=%q want tcp", got)
 	}
+	res = result{HTTP: true, TLS: true, ALPN: "http/1.1", PhaseResults: []PhaseResult{
+		newPhaseSuccess("tcp", 10),
+		newPhaseSuccess("tls", 20),
+		newPhaseFailure("route", errors.New("not observed"), 0, "ROUTE_REQUEST_NOT_OBSERVED"),
+	}}
+	if got := finalizeFinalPhase(res, res.PhaseResults, ""); got != "route" {
+		t.Fatalf("finalizeFinalPhase()=%q want route when route evidence failed", got)
+	}
 }
 
 func TestResultIndicatesTimeoutUsesPhaseStatus(t *testing.T) {
@@ -79,5 +89,20 @@ func TestResultIndicatesTimeoutUsesPhaseStatus(t *testing.T) {
 	}}
 	if !resultIndicatesTimeout(res) {
 		t.Fatal("expected timeout from phase status")
+	}
+}
+
+func TestResultErrorSignalsPreferStructuredPhases(t *testing.T) {
+	res := result{Error: "legacy text", ErrorCode: "LEGACY_FAILED", PhaseResults: []PhaseResult{
+		newPhaseSuccess("tcp", 1),
+		newPhaseFailure("http1", errors.New("parse failed"), 2, "HTTP_PARSE_FAILED"),
+		newPhaseFailure("tcp", errors.New("timeout"), 3, "TCP_CONNECT_TIMEOUT"),
+	}}
+	signals := resultErrorSignals(res)
+	if len(signals) != 4 {
+		t.Fatalf("signals=%#v", signals)
+	}
+	if signals[0] != "HTTP_PARSE_FAILED" || signals[1] != "TCP_CONNECT_TIMEOUT" {
+		t.Fatalf("phase signals not first: %#v", signals)
 	}
 }
