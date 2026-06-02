@@ -2,7 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
+)
+
+var (
+	errNoUsableTargets   = errors.New("no usable targets")
+	errNoTargetsSelected = errors.New("no targets selected")
 )
 
 type sidecarScanRequestV1 struct {
@@ -128,4 +135,77 @@ func (item planWorkItem) probeOptions() probeOptions {
 		PlanID:              item.planID,
 		ResultCorrelationID: item.correlationID,
 	}
+}
+
+func legacyScanWorkItems(targets []string, ports []int) []planWorkItem {
+	if len(targets) == 0 || len(ports) == 0 {
+		return nil
+	}
+	items := make([]planWorkItem, 0, len(targets)*len(ports))
+	for _, target := range targets {
+		t := strings.TrimSpace(target)
+		if t == "" {
+			continue
+		}
+		for _, port := range ports {
+			if port <= 0 {
+				continue
+			}
+			items = append(items, planWorkItem{
+				target: t,
+				port:   port,
+			})
+		}
+	}
+	return items
+}
+
+type legacyScanPreparation struct {
+	req              scanRequest
+	targets          []string
+	items            []planWorkItem
+	warnings         []string
+	safetyPolicy     SafetyPolicyObservation
+	expansionSummary map[string]any
+}
+
+func prepareLegacyScan(bodyBytes []byte) (legacyScanPreparation, error) {
+	var req scanRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		return legacyScanPreparation{}, fmt.Errorf("unmarshal scan request: %w", err)
+	}
+	req.normalize()
+	globalBackoffNS.Store(0)
+	explicitTargets := len(req.Targets) > 0
+	skippedBefore := metricSafetySkipped.Load()
+	targets := expandTargets(req.Targets, req.MaxTargets, req.MaxCIDRHosts, req.RespectSafety)
+	expansionSafetySkipped := metricSafetySkipped.Load() - skippedBefore
+	if len(targets) == 0 {
+		if explicitTargets {
+			return legacyScanPreparation{}, errNoUsableTargets
+		}
+		return legacyScanPreparation{}, errNoTargetsSelected
+	}
+	if req.MaxTargets > 0 && len(targets) > req.MaxTargets {
+		targets = targets[:req.MaxTargets]
+	}
+	if req.Randomize {
+		shuffleStrings(targets)
+	}
+	safetyPolicy := safetyPolicyObservation(req, len(targets))
+	warnings := scanWarnings(req, targets)
+	warnings = append(warnings, safetyPolicy.Warnings...)
+	items := legacyScanWorkItems(targets, req.Ports)
+	return legacyScanPreparation{
+		req:          req,
+		targets:      targets,
+		items:        items,
+		warnings:     warnings,
+		safetyPolicy: safetyPolicy,
+		expansionSummary: map[string]any{
+			"submitted_tokens": len(req.Targets),
+			"expanded_targets": len(targets),
+			"safety_skipped":   expansionSafetySkipped,
+		},
+	}, nil
 }

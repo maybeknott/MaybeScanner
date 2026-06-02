@@ -1,6 +1,6 @@
 package com.maybescanner;
 
-/** Pure decision policy for sidecar heartbeat checks. */
+/** MaybeScanner heartbeat policy prioritizes scan-stop safety on target-first flows. */
 final class SidecarHeartbeatPolicy {
     private SidecarHeartbeatPolicy() {}
 

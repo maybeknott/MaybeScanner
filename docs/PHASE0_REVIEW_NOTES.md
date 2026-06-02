@@ -19,8 +19,14 @@ Date: 2026-05-31
 
 ## Grep gate
 
-- `scripts/verify-release-readiness.ps1` bans retired overclaim strings in release docs.
+- Retired overclaim strings are still tracked as a release-doc gate, but the legacy `scripts/verify-release-readiness.ps1` path is no longer present in the current repo tree and must not be cited as active evidence.
 
 ## Deferred (not Phase 0 doc blockers)
 
 - Screenshot proof of default UI (B4 device matrix).
+
+## 2026-06-02 final refactor closeout
+
+- MainActivity has been reduced through app-owned extraction of diagnostics, result filtering/summary/export, preview input analysis, preview chips, local history, Shizuku process/radio handling, and runtime reporting.
+- Final mirror audit removed the tiny SupportActions wrapper and specialized retained helpers where product copy differs.
+- Verification: `./gradlew.bat :app:compileUniversalDebugJavaWithJavac` and `go test ./...` passed after the final closeout pass.
