@@ -33,6 +33,19 @@ public class TargetPlanRecordTest {
     }
 
     @Test
+    public void hostnamePassedAsResolvedIpIsSanitizedButStillDistinct() {
+        TargetPlanRecord first = TargetPlanRecord.forIpFirstProbe(
+                "alpha.example.com", "alpha.example.com", 443, "", false);
+        TargetPlanRecord second = TargetPlanRecord.forIpFirstProbe(
+                "beta.example.com", "beta.example.com", 443, "", false);
+
+        assertEquals("", first.resolvedIp());
+        assertEquals("unknown", first.ipFamily());
+        assertTrue(first.dedupeKey().contains("raw=alpha.example.com"));
+        assertNotEquals(first.planId(), second.planId());
+    }
+
+    @Test
     public void planAndCorrelationIdsAreStable() {
         TargetPlanRecord a = TargetPlanRecord.forIpFirstProbe("1.1.1.1", "1.1.1.1", 443, "", false);
         TargetPlanRecord b = TargetPlanRecord.forIpFirstProbe("1.1.1.1", "1.1.1.1", 443, "", false);

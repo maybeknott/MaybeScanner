@@ -282,8 +282,9 @@ final class ScanTargetPlanner {
         int safePort = port > 0 && port < 65536 ? port : 443;
         for (String target : previewTargets) {
             if (target == null || target.trim().isEmpty()) continue;
-            String ip = target.trim();
-            ids.add(TargetPlanRecord.forIpFirstProbe(ip, ip, safePort, "", sniPairingEnabled).planId());
+            String token = target.trim();
+            String resolvedIp = isIp(token) ? token : "";
+            ids.add(TargetPlanRecord.forIpFirstProbe(token, resolvedIp, safePort, "", sniPairingEnabled).planId());
         }
         return ids.size();
     }

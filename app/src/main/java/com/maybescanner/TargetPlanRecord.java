@@ -2,8 +2,6 @@ package com.maybescanner;
 
 import org.json.JSONObject;
 
-import java.net.Inet6Address;
-import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Locale;
@@ -15,18 +13,23 @@ final class TargetPlanRecord {
     private final String correlationId;
     private final String productMode;
     private final String normalizedKind;
+    private final String resolvedIp;
+    private final String ipFamily;
     private final String sniMode;
     private final String dedupeKey;
     private final String originalHostname;
     private final String routeId;
 
     private TargetPlanRecord(JSONObject payload, String planId, String correlationId, String productMode,
-                             String normalizedKind, String sniMode, String dedupeKey, String originalHostname, String routeId) {
+                             String normalizedKind, String resolvedIp, String ipFamily, String sniMode,
+                             String dedupeKey, String originalHostname, String routeId) {
         this.payload = payload;
         this.planId = planId;
         this.correlationId = correlationId;
         this.productMode = productMode;
         this.normalizedKind = normalizedKind;
+        this.resolvedIp = resolvedIp;
+        this.ipFamily = ipFamily;
         this.sniMode = sniMode;
         this.dedupeKey = dedupeKey;
         this.originalHostname = originalHostname;
@@ -51,7 +54,8 @@ final class TargetPlanRecord {
                                           boolean sniPairingEnabled, String routeId, String routeType, String networkPath,
                                           TargetExpansionMeta expansion) {
         String token = clean(rawToken);
-        String ip = clean(resolvedIp);
+        String resolved = clean(resolvedIp);
+        String ip = ScanTargetPlanner.isIp(resolved) ? resolved : "";
         String sni = clean(sniHost);
         if (expansion != null && expansion.hasExpansion()) {
             token = expansion.parentToken;
@@ -60,9 +64,11 @@ final class TargetPlanRecord {
         String sniMode = sniModeFor(kind, ip, sni, sniPairingEnabled);
         String hostname = hostnameFor(token, kind);
         String httpHost = httpHostFor(kind, sni, sniPairingEnabled);
-        String dedupe = dedupeKey(productMode, ip, port, sniMode, sni, httpHost, routeId, expansion);
+        String identity = identityForDedupe(token, ip);
+        String dedupe = dedupeKey(productMode, identity, port, sniMode, sni, httpHost, routeId, expansion);
         String planId = stableId("plan", dedupe);
         String correlationId = stableId("corr", dedupe);
+        String family = ipFamily(ip);
 
         JSONObject o = new JSONObject();
         try {
@@ -76,7 +82,7 @@ final class TargetPlanRecord {
             o.put("normalized_kind", kind);
             o.put("original_hostname", hostname == null ? JSONObject.NULL : hostname);
             o.put("resolved_ip", ip.isEmpty() ? JSONObject.NULL : ip);
-            o.put("ip_family", ipFamily(ip));
+            o.put("ip_family", family);
             o.put("port", Math.max(0, port));
             o.put("sni_host", sniMode.equals("ip_only_no_sni") ? JSONObject.NULL : (sni.isEmpty() ? JSONObject.NULL : sni));
             o.put("sni_mode", sniMode);
@@ -94,7 +100,7 @@ final class TargetPlanRecord {
             o.put("result_correlation_id", correlationId);
         } catch (Exception ignored) {
         }
-        return new TargetPlanRecord(o, planId, correlationId, productMode, kind, sniMode, dedupe,
+        return new TargetPlanRecord(o, planId, correlationId, productMode, kind, ip, family, sniMode, dedupe,
                 hostname == null ? "" : hostname, clean(routeId));
     }
 
@@ -120,6 +126,14 @@ final class TargetPlanRecord {
 
     String normalizedKind() {
         return normalizedKind;
+    }
+
+    String resolvedIp() {
+        return resolvedIp;
+    }
+
+    String ipFamily() {
+        return ipFamily;
     }
 
     String sniMode() {
@@ -173,21 +187,25 @@ final class TargetPlanRecord {
 
     private static String ipFamily(String ip) {
         if (ip.isEmpty()) return "unknown";
-        try {
-            return InetAddress.getByName(ip) instanceof Inet6Address ? "ipv6" : "ipv4";
-        } catch (Exception ignored) {
-            return ip.contains(":") ? "ipv6" : "ipv4";
-        }
+        if (ScanTargetPlanner.isIpv4(ip)) return "ipv4";
+        if (ScanTargetPlanner.isIp(ip)) return "ipv6";
+        return "unknown";
     }
 
-    private static String dedupeKey(String productMode, String ip, int port, String sniMode, String sni, String httpHost,
+    private static String identityForDedupe(String token, String ip) {
+        if (!ip.isEmpty()) return "ip=" + ip;
+        String raw = clean(token);
+        return raw.isEmpty() ? "raw=" : "raw=" + raw;
+    }
+
+    private static String dedupeKey(String productMode, String identity, int port, String sniMode, String sni, String httpHost,
                                     String routeId, TargetExpansionMeta expansion) {
         String base;
         if ("route_pairing".equals(productMode)) {
-            base = productMode + "|" + ip + "|" + port + "|sni=" + sni + "|host=" + (httpHost == null ? "" : httpHost) + "|route=" + routeId;
+            base = productMode + "|" + identity + "|" + port + "|sni=" + sni + "|host=" + (httpHost == null ? "" : httpHost) + "|route=" + routeId;
         } else {
             String sniPart = "ip_only_no_sni".equals(sniMode) ? "no_sni" : sni;
-            base = productMode + "|" + ip + "|" + port + "|" + sniPart + "|" + routeId;
+            base = productMode + "|" + identity + "|" + port + "|" + sniPart + "|" + routeId;
         }
         if (expansion != null && expansion.hasExpansion()) {
             return base + "|parent=" + expansion.parentToken + "|idx=" + expansion.index;
@@ -211,10 +229,6 @@ final class TargetPlanRecord {
         o.put("expansion_total_capped", expansion.totalCapped);
         o.put("expansion_skipped_count", expansion.skippedCount);
         o.put("sampling_seed", expansion.samplingSeed.isEmpty() ? JSONObject.NULL : expansion.samplingSeed);
-    }
-
-    private static String dedupeKey(String productMode, String ip, int port, String sniMode, String sni, String httpHost, String routeId) {
-        return dedupeKey(productMode, ip, port, sniMode, sni, httpHost, routeId, null);
     }
 
     private static String stableId(String prefix, String seed) {
