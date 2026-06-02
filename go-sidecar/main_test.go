@@ -202,6 +202,53 @@ func TestExportNmapRejectsNonPostWithStructuredMethodError(t *testing.T) {
 	}
 }
 
+func TestExportNmapIncludesTargetPlanTraceability(t *testing.T) {
+	body := bytes.NewBufferString(`[
+		{
+			"target":"example.com",
+			"ip":"93.184.216.34",
+			"port":443,
+			"sni":"example.com",
+			"tcp":true,
+			"tls":true,
+			"network_classification":"public",
+			"plan_id":"p1",
+			"result_correlation_id":"corr-1",
+			"target_plan":{
+				"schema_version":1,
+				"plan_id":"p1",
+				"product_mode":"ip_first",
+				"raw_token":"example.com",
+				"original_hostname":"example.com",
+				"resolved_ip":"93.184.216.34",
+				"sni_mode":"from_hostname",
+				"dedupe_key":"dedupe&1",
+				"result_correlation_id":"corr-1"
+			}
+		}
+	]`)
+	req := httptest.NewRequest(http.MethodPost, "/api/export/nmap", body)
+	rec := httptest.NewRecorder()
+	exportNmap(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got := rec.Body.String()
+	for _, want := range []string{
+		`<hostscript>`,
+		`id="maybescanner-target-plan"`,
+		`product_mode=ip_first`,
+		`raw_token=example.com`,
+		`dedupe_key=dedupe&amp;1`,
+		`id="maybescanner-result-correlation"`,
+		`correlation_id=corr-1`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("export missing %q in %s", want, got)
+		}
+	}
+}
+
 func TestValidateRoutingPluginEndpointReturnsValidation(t *testing.T) {
 	body := bytes.NewBufferString(`{
 		"schema_version":1,
